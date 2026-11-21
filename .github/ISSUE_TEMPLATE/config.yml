@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/RuairiSpain/Azure-Foundry-FinOps/security/advisories/new
+    about: Please don't open a public issue for a vulnerability. Report it privately here.
+  - name: Setup help for foundry-finops download
+    url: https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/SETUP.md
+    about: Sign-in, roles and troubleshooting are covered in the setup guide.

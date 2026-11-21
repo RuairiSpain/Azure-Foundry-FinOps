@@ -1,0 +1,46 @@
+name: Feature request
+description: Suggest a new query, tool, option or improvement
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part would change?
+      options:
+        - SDK (FinOpsClient and operations)
+        - Command line (foundry-finops ...)
+        - foundry-finops download
+        - Example dashboard
+        - MCP connector (foundry-finops-cowork/mcp_server)
+        - Cowork plugin package or skills
+        - Documentation
+        - CI or workflows
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The FinOps question or task, not the solution. For example "show cost per agent for last quarter".
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+      description: The command, option, tool or output you have in mind.
+  - type: textarea
+    id: api
+    attributes:
+      label: Azure API or data source (if you know it)
+      description: A link to the REST API, the required role, and whether it is generally available or in preview.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today instead?
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'm willing to open a pull request for this

@@ -1,0 +1,75 @@
+name: Bug report
+description: Something doesn't work or gives wrong results
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Before you paste anything, remove subscription IDs, tenant IDs, tokens, keys, resource
+        names you consider private, and any cost figures from exported `FinOps/` files.** Don't attach whole exports.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Where does it happen?
+      options:
+        - SDK (FinOpsClient and operations)
+        - Command line (foundry-finops ...)
+        - foundry-finops download
+        - Example dashboard
+        - MCP connector (foundry-finops-cowork/mcp_server)
+        - Cowork plugin package or skills
+        - Documentation
+        - CI or workflows
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: "Output of `pip show foundry-finops`, or the commit hash if you run from a clone."
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python and operating system
+      placeholder: "Python 3.12, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you ran (the exact command or code) and what you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Does it also happen with `--demo`? That tells us whether Azure is involved.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: azure
+    attributes:
+      label: Azure context (if it involves Azure)
+      description: |
+        The HTTP status and error code (for example `403 AuthorizationFailed`), the roles the identity has, the billing
+        type (EA, MCA, CSP, pay-as-you-go), the API that failed, and the `status` and `detail` from `_manifest.json`
+        for `download` problems. No IDs or secrets.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or logs
+      description: Redacted. Run with debug logging if you can (`logging.getLogger("foundry_finops").setLevel("DEBUG")`).
+      render: text
