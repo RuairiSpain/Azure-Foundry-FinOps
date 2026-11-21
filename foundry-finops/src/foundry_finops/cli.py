@@ -1,9 +1,9 @@
-"""``foundry-finops`` command line: quick reports straight from the terminal.
+r"""``foundry-finops`` command line: quick reports straight from the terminal.
 
 Examples::
 
     foundry-finops --subscription <id> -g rg-ai cost-controls contoso-foundry
-    foundry-finops --subscription <id> -g rg-ai cost --by project --scope <foundry-resource-id> --format csv
+    foundry-finops --subscription <id> -g rg-ai --format csv cost --by project --account contoso-foundry
     foundry-finops --subscription <id> -g rg-ai tokens contoso-foundry --hours 48
     foundry-finops --subscription <id> quota --location eastus2
     foundry-finops --demo cost --by team

@@ -8,6 +8,9 @@ Foundry FinOps, token limits, chargeback, budgeting, usage, costs per project/ag
 | `foundry-finops/examples/dashboard/` | Example web dashboard in the style of the Azure portal and Log Analytics, with CRUD pages, charts and downloads | `python foundry-finops/examples/dashboard/server.py` |
 | `foundry-finops-cowork/` | Separate project: MCP connector (Entra sign-in + on-behalf-of) and a Cowork plugin with report and governance skills | `foundry-finops-cowork/docs/SETUP.md` |
 
+**Start with the [usage guide](foundry-finops/docs/USAGE.md)**: install the package, import it, and run every query type from
+Python and from the command line. The [download setup guide](foundry-finops/docs/SETUP.md) covers the bulk JSON download.
+
 Everything runs in demo mode without Azure (illustrative data). Tests use only the standard library plus `requests`,
 `PyJWT` and `cryptography`:
 

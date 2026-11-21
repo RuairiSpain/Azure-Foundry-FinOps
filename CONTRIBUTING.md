@@ -52,8 +52,10 @@ PYTHONPATH=foundry-finops-cowork python -m pytest -q foundry-finops-cowork/tests
 1. Branch from `main` and keep the change focused. One concern per pull request is easier to review.
 2. Add or update tests. A bug fix should come with a test that fails without the fix.
 3. Add a line to `foundry-finops/CHANGELOG.md` under **Unreleased** for anything a user would notice.
-4. Update the docs when behaviour changes (`foundry-finops/README.md`, `foundry-finops/docs/SETUP.md`, and
-   `foundry-finops-cowork/docs/SETUP.md`).
+4. Update the docs when behaviour changes (`foundry-finops/README.md`, `foundry-finops/docs/USAGE.md`,
+   `foundry-finops/docs/SETUP.md`, and `foundry-finops-cowork/docs/SETUP.md`). `tests/test_usage_docs.py` fails if a
+   sample in `USAGE.md` names an import, method, argument or CLI flag that no longer exists, so add new samples there
+   when you add a query type.
 5. Open the pull request, describe what changed and why, and say how you tested it. If you couldn't test against real
    Azure, say so.
 
