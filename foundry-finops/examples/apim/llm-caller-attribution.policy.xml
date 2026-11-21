@@ -77,6 +77,11 @@
           ).ToString(Newtonsoft.Json.Formatting.None);
       }</message>
     </trace>
+
+    <!-- Calls the model with the gateway's own managed identity. This replaces the caller's Authorization header after the
+         caller's token has been validated and recorded above. Needs the role "Cognitive Services OpenAI User" (or the
+         Foundry equivalent) for the gateway's identity on the model resource. Remove it if the backend uses an API key. -->
+    <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
   </inbound>
   <backend>
     <base />

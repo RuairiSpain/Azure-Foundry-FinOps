@@ -26,6 +26,28 @@ gateway; nothing changes in the agent code.
    why the object ID is **not** a metric dimension.
 2. **A per-call trace record** with the object ID and the request ID. This is where per-person usage comes from.
 
+## Try it in a test subscription
+
+`deploy/` has a Bicep template and two scripts. **They compile but have never been run against a real subscription.**
+
+| File | What it does |
+|---|---|
+| `deploy/main.bicep` | Log Analytics workspace, workspace-based Application Insights, an API Management instance with a managed identity, one chat-completions API that forwards to your model endpoint, the policy, and diagnostic settings that send gateway logs to the workspace. Subscription keys stay required, so the gateway is not an open proxy to your model. |
+| `deploy/deploy.sh` | Creates the resource group and deploys the template, after showing what it will create and asking to continue. `deploy.sh teardown` deletes the resource group. |
+| `deploy/smoke-test.sh` | Sends a call with no token (expects 200), a call with a bad token (expects 401), and a call with your token, then runs the portal's gateway query against the workspace and waits for the rows. |
+
+You provide the model endpoint, a gateway API registration whose ID is the audience, and (for the role assignment) the name
+of a Foundry or Azure OpenAI account in the same resource group. API Management is billed while it exists and can take many
+minutes to create. Run `deploy.sh teardown` when done.
+
+What the template does **not** do, and you must check by hand:
+
+- Turn on the API-level LLM logging setting. The template enables the `GatewayLlmLogs` category on the service, but the
+  category name is unverified, and the per-API setting is not in the template.
+- Create the API Management subscription and key, or the Entra app registration.
+- Prove that `llm-emit-token-metric` accepts the dimension expressions or that the trace record reaches the workspace. The
+  smoke test is how you find out.
+
 ## Using it
 
 1. Create the named values `tenant-id` and `api-audience`.
