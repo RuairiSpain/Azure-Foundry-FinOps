@@ -2,7 +2,7 @@
 #   docker build -f foundry-finops-cowork/Dockerfile -t foundry-finops-mcp .
 # To use the released package from PyPI instead, delete the `COPY foundry-finops /sdk` and `pip install /sdk` lines
 # and change the requirements step to `RUN pip install --no-cache-dir -r requirements.txt`.
-FROM python:3.12-slim
+FROM python:3.15-slim
 WORKDIR /app
 COPY foundry-finops /sdk
 RUN pip install --no-cache-dir /sdk
