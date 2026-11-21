@@ -177,7 +177,7 @@ ruff check src tests && mypy
 python -m build && twine check dist/*
 ```
 
-Publishing is automated by `.github/workflows/publish.yml` (PyPI trusted publishing on a `v*` tag).
+Publishing is automated by `.github/workflows/release.yml` (PyPI trusted publishing plus a GitHub release on a `v*` tag).
 
 ## Status and caveats
 

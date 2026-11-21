@@ -1,4 +1,5 @@
-# Build from the suite root so the local SDK is installed (foundry-finops isn't on PyPI yet):
+# Build from the suite root so the image contains this commit's SDK. To use the released package from PyPI instead,
+# delete the two SDK lines below; requirements.txt already lists foundry-finops:
 #   docker build -f foundry-finops-cowork/Dockerfile -t foundry-finops-mcp .
 # Once foundry-finops is published you can drop the two SDK lines and rely on requirements.txt only.
 FROM python:3.12-slim

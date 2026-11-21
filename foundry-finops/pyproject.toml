@@ -50,7 +50,7 @@ foundry-finops = "foundry_finops.cli:main"
 Homepage = "https://github.com/RuairiSpain/Azure-Foundry-FinOps"
 Documentation = "https://github.com/RuairiSpain/Azure-Foundry-FinOps#readme"
 Issues = "https://github.com/RuairiSpain/Azure-Foundry-FinOps/issues"
-Changelog = "https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "src/foundry_finops/_version.py"

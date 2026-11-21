@@ -139,18 +139,24 @@ The `release` workflow (`.github/workflows/release.yml`) then:
 1. **verifies** that the tag is a valid version and equals `_version.py`, that the changelog has notes for it, that no
    `your-org` placeholders remain, and that lint, mypy and both test suites pass;
 2. **builds** the sdist and wheel, checks them with `twine`, and checks they carry the tagged version;
-3. **publishes to PyPI** through trusted publishing, but only when the repository variable `PUBLISH_TO_PYPI` is
-   `true` (see below);
+3. **publishes to PyPI** (`foundry-finops`) through trusted publishing;
 4. **creates the GitHub release** with the changelog section as its notes and the package files plus `SHA256SUMS.txt`
-   attached.
+   attached. This only happens after PyPI accepted the files.
 
 If a check fails, nothing is published or released. Fix the problem, delete the tag
 (`git push --delete origin v0.2.0` and `git tag -d v0.2.0`) and tag again. Don't re-use a version that already reached
 PyPI: PyPI never allows a file to be replaced.
 
-**One-time PyPI setup.** Create the project on PyPI, add a *trusted publisher* for this repository with workflow
-`release.yml` and environment `pypi`, create the `pypi` environment in the repository settings (add required reviewers
-if you want an approval step), then set the repository variable `PUBLISH_TO_PYPI` to `true`.
+**One-time PyPI setup** (before the first tag). The project name doesn't have to exist yet:
+
+1. On pypi.org go to *Your account > Publishing* and add a **pending publisher**: project name `foundry-finops`, owner
+   `RuairiSpain`, repository `Azure-Foundry-FinOps`, workflow `release.yml`, environment `pypi`.
+2. In the GitHub repository create an environment named `pypi` (Settings > Environments). Add yourself as a required
+   reviewer if you want to approve each publish.
+3. Merge a change that sets the release version, then tag it. The first successful run creates the PyPI project.
+
+To try the whole path without touching the real index, do the same on test.pypi.org and point the publish step at it
+(`repository-url: https://test.pypi.org/legacy/`) in a branch.
 
 ## Security issues
 

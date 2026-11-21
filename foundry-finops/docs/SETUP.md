@@ -24,7 +24,15 @@ It only reads from Azure and writes local files. Nothing in Azure is changed.
 
 ## 2. Install
 
-The package is not on PyPI yet, so install it from a clone of this repository:
+Install the released package from PyPI:
+
+```bash
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install foundry-finops
+foundry-finops download --list                         # prints the query names; proves the install works
+```
+
+To run the latest unreleased code instead, install from a clone of this repository:
 
 ```bash
 git clone https://github.com/RuairiSpain/Azure-Foundry-FinOps.git

@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 – 2026-11-21
+
+First release.
+
+### Features
+- First release: `FinOpsClient` with foundry, cost_controls, cost, metrics, logs, quota, tags, alerts, apim and
+  pricing operation groups.
+- Typed models with ARM round-tripping; `Table` with CSV/JSON/pandas export.
+- Retry policy honouring `Retry-After`; cost-control blocks (`x-ms-budget-cause`) raise `BudgetExceededError`
+  and are never retried.
+- APIM `llm-token-limit` / `llm-emit-token-metric` builders and policy upsert.
+- OpenTelemetry usage tracking (`finops_context`, `UsageTracker`) and KQL library.
+- Reporting facade (`service`), illustrative demo data with a KQL-subset engine, and a CLI.
+
 - `foundry-finops download --roles auto` reads the signed-in identity's role assignments and role definitions from
   Azure and runs only the queries its permissions allow at the scope each query uses (custom roles, `notActions`,
   group-inherited roles and management-group assignments included). New `fo.authorization` operations and
@@ -13,7 +26,7 @@
   alerts, API Management, retail prices and the saved KQL queries) for a start/end date and saves one JSON file per
   query to `FinOps/<today>/<query>.json`, plus `_manifest.json` listing what succeeded, was skipped or failed.
 
-## Unreleased – review fixes
+### Hardening and fixes from the code review
 **Security / integration**
 - Credentials can no longer be sent to a non-ARM host: absolute URLs and `..` in caller-supplied scopes are
   refused; user-supplied names are percent-encoded as single path segments; OData filter values are escaped.
@@ -56,13 +69,3 @@
 - `hatchling>=1.27` (required for SPDX `license` + `license-files`); ruff and mypy now pass and mypy gates CI.
 - `scripts/configure_plugin.py` builds the package before bumping the manifest version.
 - Cowork Dockerfile builds from the suite root so the local SDK is installed; adds a health check.
-
-## 0.1.0 – 2026-11-21
-- First release: `FinOpsClient` with foundry, cost_controls, cost, metrics, logs, quota, tags, alerts, apim and
-  pricing operation groups.
-- Typed models with ARM round-tripping; `Table` with CSV/JSON/pandas export.
-- Retry policy honouring `Retry-After`; cost-control blocks (`x-ms-budget-cause`) raise `BudgetExceededError`
-  and are never retried.
-- APIM `llm-token-limit` / `llm-emit-token-metric` builders and policy upsert.
-- OpenTelemetry usage tracking (`finops_context`, `UsageTracker`) and KQL library.
-- Reporting facade (`service`), illustrative demo data with a KQL-subset engine, and a CLI.

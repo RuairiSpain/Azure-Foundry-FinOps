@@ -3,7 +3,7 @@ name: release
 # Push a tag such as v0.2.0 to release. Steps: CONTRIBUTING.md > Releasing.
 #   1. verify  - the tag matches the package version, the changelog has notes, the checks pass
 #   2. build   - sdist and wheel
-#   3. publish - to PyPI (only when the repository variable PUBLISH_TO_PYPI is "true")
+#   3. publish - to PyPI (trusted publishing; one-time setup in CONTRIBUTING.md)
 #   4. release - a GitHub release with the notes and the files attached
 on:
   push:
@@ -79,9 +79,8 @@ jobs:
 
   publish:
     needs: [verify, build]
-    # Off until the project exists on PyPI with a trusted publisher for this repository and workflow (release.yml).
-    if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
     runs-on: ubuntu-latest
+    # Needs a trusted publisher on PyPI for this repository, workflow release.yml and environment "pypi".
     environment: pypi
     permissions:
       id-token: write   # PyPI trusted publishing: no API token is stored
@@ -95,8 +94,7 @@ jobs:
 
   release:
     needs: [verify, build, publish]
-    # Runs when publishing succeeded or was switched off, but not when it failed.
-    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped') }}
+    # Only after PyPI accepted the files, so a GitHub release never exists without its package.
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the release

@@ -45,7 +45,7 @@ updates:
       timezone: Etc/UTC
     open-pull-requests-limit: 5
     ignore:
-      - dependency-name: foundry-finops   # this repository's own SDK, not published to PyPI yet
+      - dependency-name: foundry-finops   # this repository's own SDK; remove this once 0.1.0 is on PyPI
     groups:
       azure:
         patterns: ["azure-*"]
