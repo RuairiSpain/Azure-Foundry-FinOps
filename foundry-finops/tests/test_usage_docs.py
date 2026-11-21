@@ -18,10 +18,14 @@ import shlex
 import unittest
 from pathlib import Path
 
-from foundry_finops import FinOpsClient, cli
+from foundry_finops import FinOpsClient, StaticTokenCredential, cli
 
 DOC = Path(__file__).resolve().parents[1] / "docs" / "USAGE.md"
-GROUPS = {name for name, v in inspect.getmembers(FinOpsClient) if isinstance(v, __import__("functools").cached_property)}
+_CLIENT = FinOpsClient(StaticTokenCredential("t"), "sub-1")
+#: Operation groups: this package's (cached properties) and the Microsoft client's (set in its constructor).
+GROUPS = {n for n in dir(_CLIENT) if not n.startswith("_") and type(getattr(_CLIENT, n)).__name__.endswith("Operations")}
+#: Modules of helper functions that take the client first.
+HELPER_MODULES = ("cost_controls", "resources")
 
 
 def blocks(lang: str) -> list[tuple[int, str]]:
@@ -58,6 +62,17 @@ class PythonSamples(unittest.TestCase):
                 if not isinstance(node, ast.Call):
                     continue
                 chain = _attr_chain(node.func)
+                if len(chain) == 2 and chain[0] in HELPER_MODULES:
+                    module = importlib.import_module(f"foundry_finops.{chain[0]}")
+                    with self.subTest(line=line, call=".".join(chain)):
+                        fn = getattr(module, chain[1], None)
+                        self.assertTrue(callable(fn), f"{chain[0]}.{chain[1]} does not exist")
+                        params = inspect.signature(fn).parameters
+                        for kw in node.keywords:
+                            if kw.arg is not None:
+                                self.assertIn(kw.arg, params, f"{chain[0]}.{chain[1]} has no argument {kw.arg!r}")
+                        checked += 1
+                    continue
                 if len(chain) != 3 or chain[0] != "fo":
                     continue
                 _, group, method = chain
@@ -121,14 +136,7 @@ def _attr_chain(node: ast.AST) -> list[str]:
 
 
 def _group_class(group: str) -> type:
-    from foundry_finops import operations as ops
-
-    names = {"foundry": ops.FoundryOperations, "cost_controls": ops.CostControlOperations,
-             "cost": ops.CostManagementOperations, "metrics": ops.MetricsOperations, "logs": ops.LogsOperations,
-             "quota": ops.QuotaOperations, "tags": ops.TagOperations, "alerts": ops.AlertOperations,
-             "apim": ops.ApimOperations, "pricing": ops.PricingOperations, "authorization": ops.AuthorizationOperations,
-             "policy": ops.PolicyOperations}
-    return names[group]
+    return type(getattr(_CLIENT, group))
 
 
 if __name__ == "__main__":

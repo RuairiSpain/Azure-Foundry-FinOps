@@ -16,7 +16,8 @@ from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from typing import Any
 
-from .client import FinOpsClient
+from . import resources
+from ._client import FinOpsClient
 from .models import Table
 from .operations.monitor import (  # noqa: F401  (project_matches re-exported for callers)
     FoundryMetrics,
@@ -176,12 +177,15 @@ def ptu_headroom(
 
     A value is ``None`` when Azure returned nothing for it. Nothing is estimated.
     """
-    deployments = [d for d in fo.foundry.list_deployments(account, resource_group) if d.is_provisioned]
+    rg = resource_group or fo.resource_group
+    if not rg:
+        raise ValueError("resource_group is required (pass it or set a default on FinOpsClient)")
+    deployments = [d for d in resources.list_deployments(fo, rg, account) if d.is_provisioned]
     if not deployments:
         return []
-    region = location or fo.foundry.get_account(account, resource_group).location
-    quota = list(fo.quota.usages(region)) if region else []
-    account_id = fo.foundry.account_id(account, resource_group)
+    region = location or resources.get_account(fo, rg, account).location
+    quota = list(resources.list_quota(fo, region)) if region else []
+    account_id = fo.account_id(account, rg)
     interval = "PT1H" if hours <= 48 else "P1D"
     stats: dict[str, dict[str, list[float]]] = {}
     for label, aggregation in (("avg", "Average"), ("max", "Maximum")):

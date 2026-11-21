@@ -16,8 +16,8 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from ._client import FinOpsClient
 from .analysis import allocate_cost, anomalies_from_table, ptu_headroom
-from .client import FinOpsClient
 from .errors import FinOpsError
 from .models import CostQuery, Table
 
@@ -109,10 +109,9 @@ def run(ap: argparse.ArgumentParser, args: argparse.Namespace, emit: Callable[[A
     if retail_only:  # public API: no Azure sign-in needed
         from ._auth import StaticTokenCredential
 
-        fo = FinOpsClient(args.subscription or "00000000-0000-0000-0000-000000000000",
-                          StaticTokenCredential("not-used"))
+        fo = FinOpsClient(StaticTokenCredential("not-used"), args.subscription or "00000000-0000-0000-0000-000000000000")
     else:
-        fo = FinOpsClient(args.subscription, resource_group=args.resource_group or None)
+        fo = FinOpsClient.from_default_credential(args.subscription, resource_group=args.resource_group or None)
     try:
         return _dispatch(ap, args, emit, fo)
     except FinOpsError as exc:
@@ -144,7 +143,7 @@ def _dispatch(ap: argparse.ArgumentParser, args: argparse.Namespace, emit: Calla
             ap.error(f"--by must be a comma-separated list of {', '.join(_DIMENSIONS)} (got {exc.args[0]!r})")
         if not dims:
             ap.error("--by needs at least one of " + ", ".join(_DIMENSIONS))
-        rid = fo.foundry.account_id(account)
+        rid = fo.account_id(account)
         rows = (fo.metrics.estimated_cost(rid, hours=args.hours, by=dims, interval=args.interval) if args.over_time
                 else fo.metrics.estimated_cost_totals(rid, hours=args.hours, by=dims))
         emit(rows, fmt)
@@ -175,7 +174,7 @@ def _prices(ap: argparse.ArgumentParser, args: argparse.Namespace, emit: Callabl
         note += f", reduced by {args.discount_percent:g}% as you asked (not read from Azure)." if args.discount_percent else "."
         print(note, file=sys.stderr)
         return
-    scope = args.scope or (fo.foundry.account_id(_need(ap, args)) if args.account else None)
+    scope = args.scope or (fo.account_id(_need(ap, args)) if args.account else None)
     effective = fo.cost.effective_prices(scope=scope, days=args.days)
     billed = effective.to_price_sheet()
     if args.compare:
@@ -226,7 +225,7 @@ def _allocate(ap: argparse.ArgumentParser, args: argparse.Namespace, emit: Calla
             raise ValueError("The cost at that scope is in several currencies; allocate one currency at a time")
         total = sum(c for c, _ in costs)
     dim = FoundryMetrics.MODEL_DIMENSION if args.by == "model" else FoundryMetrics.DEPLOYMENT_DIMENSION
-    series = fo.metrics.query(fo.foundry.account_id(account), [FoundryMetrics.TOTAL_TOKENS], hours=args.days * 24,
+    series = fo.metrics.query(fo.account_id(account), [FoundryMetrics.TOTAL_TOKENS], hours=args.days * 24,
                               interval="P1D", split_by=(dim,))
     weights: dict[str, float] = {}
     for s in series:

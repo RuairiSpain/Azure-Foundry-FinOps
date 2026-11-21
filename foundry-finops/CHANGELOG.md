@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.0 – 2026-11-21
+
+Breaking release: `FinOpsClient` now is the Microsoft client, so moving to the Microsoft SDKs is a change of imports.
+Read [docs/MIGRATION.md](docs/MIGRATION.md) for the call-by-call table.
+
+### Changed
+- `FinOpsClient` subclasses `azure.mgmt.cognitiveservices.CognitiveServicesManagementClient` (15.1.0b1 and later, which
+  has the Foundry cost controls). Its constructor is the Microsoft one: `FinOpsClient(credential, subscription_id,
+  base_url=None, *, cloud_setting=None, ...)`; `FinOpsClient.from_default_credential(subscription_id)` replaces the
+  default credential. `cloud=` is now `cloud_setting=AzureClouds...`.
+- The Microsoft groups replace `fo.foundry`, `fo.cost_controls` and `fo.quota`: `account_cost_controls`,
+  `project_cost_controls`, `accounts`, `projects`, `deployments`, `account_connections`, `usages`, `models`. They take
+  the resource group first and return the Microsoft models.
+- What was in `fo.cost_controls` beyond CRUD is now `foundry_finops.cost_controls` (helpers that take the client first
+  and use only official groups, so they also run on the plain Microsoft client), and the Foundry reads are
+  `foundry_finops.resources`. `CostControl` is an authoring spec with `to_resource()` and `from_resource()`.
+- `Deployment`, `FoundryAccount`, `FoundryProject` and `QuotaUsage` are now `DeploymentView`, `AccountView`,
+  `ProjectView` and `QuotaView`. `fo.event_grid.list_topics()` replaces `fo.foundry.list_event_grid_topics()`.
+- Errors are also `azure.core.exceptions` errors (`NotFoundError` is a `ResourceNotFoundError`, and so on); a 412 is a
+  `PreconditionFailedError`. Credentials are `azure.core.credentials.TokenCredential`.
+- A helper that sent an empty `properties` PATCH no longer exists: the service treats that as "clear everything".
+
+### Added
+- `foundry-finops migration-map` and `foundry_finops.migration.MAP`: the Microsoft call that matches each call of this
+  package, resolved against the installed Microsoft packages by a test.
+- Parity tests against the Microsoft package (`tests/test_official_parity.py`): same signatures, same request on the wire.
+- `docs/DESIGN.md` and `docs/MIGRATION.md`; the `conformance` extra; a weekly CI run against the newest Microsoft release.
+
 ## 0.1.0 – 2026-11-21
 
 First release.

@@ -11,6 +11,29 @@ import requests
 from foundry_finops import FinOpsClient, RetryPolicy, StaticTokenCredential
 
 
+class _Raw:
+    """The bit of a urllib3 response that azure-core's RequestsTransport touches."""
+
+    enforce_content_length = True
+    closed = True
+
+    def __init__(self, content: bytes = b"") -> None:
+        self._content = content
+
+    def read(self, *a: Any, **k: Any) -> bytes:
+        content, self._content = self._content, b""
+        return content
+
+    def stream(self, *a: Any, **k: Any) -> Any:
+        return iter([self._content] if self._content else [])
+
+    def close(self) -> None:
+        pass
+
+    def release_conn(self) -> None:
+        pass
+
+
 class FakeSession(requests.Session):
     def __init__(self) -> None:
         super().__init__()
@@ -55,11 +78,13 @@ class FakeSession(requests.Session):
         resp._content = (json.dumps(body) if not isinstance(body, str) else body).encode() if body is not None else b""
         resp.headers.update({"Content-Type": "application/json", **hdrs})
         resp.url = url
+        resp.reason = {200: "OK", 201: "Created", 204: "No Content"}.get(status, "Error")
+        resp.raw = _Raw(resp._content)
         return resp
 
 
 def make_client(session: FakeSession, **kw: Any) -> FinOpsClient:
-    client = FinOpsClient("sub-1", StaticTokenCredential("t0k3n"), resource_group="rg", session=session,
+    client = FinOpsClient(StaticTokenCredential("t0k3n"), "sub-1", resource_group="rg", session=session,
                           retry=RetryPolicy(total=2, backoff_factor=0), **kw)
     client._transport.sleep = lambda s: None
     return client

@@ -35,15 +35,19 @@ class RequiredPeriodTests(unittest.TestCase):
         self.assertEqual(body["properties"]["timePeriod"]["startDate"], START)
 
 
-class EmptyPatchTests(unittest.TestCase):
-    """C2: an empty ``properties`` object clears every property, so it is never sent."""
+class PatchTests(unittest.TestCase):
+    """C2: an empty ``properties`` object would clear every property, so the helpers never send one."""
 
-    def test_update_without_properties_makes_no_call(self):
+    def test_helpers_send_only_explicit_changes(self):
         s = FakeSession()
         fo = make_client(s)
-        with self.assertRaisesRegex(ValueError, "at least one property"):
-            fo.cost_controls.update("acct", "cap")
-        self.assertEqual(s.calls, [])
+        body = {"name": "cap", "properties": {"category": "Cost", "amount": 5, "timeGrain": "Daily"}}
+        s.add("GET", "/costControls/cap", 200, body)
+        from foundry_finops import cost_controls
+
+        cost_controls.remove_alert(fo, "rg", "acct", "cap")  # nothing to remove: no PATCH at all
+        cost_controls.remove_block(fo, "rg", "acct", "cap")
+        self.assertEqual([c["method"] for c in s.calls], ["GET", "GET"])
 
 
 class ResetWindowTests(unittest.TestCase):

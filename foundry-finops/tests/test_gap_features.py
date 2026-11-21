@@ -18,11 +18,12 @@ from foundry_finops import (
     ForbiddenError,
     PriceSheet,
     ServiceError,
+    cost_controls,
 )
 from foundry_finops.analysis import allocate_cost, detect_anomalies, ptu_headroom
 from foundry_finops.cli import main
 from foundry_finops.errors import HttpResponseError
-from foundry_finops.models import Budget, Deployment, TimeGrain
+from foundry_finops.models import Budget, DeploymentView, TimeGrain
 from foundry_finops.operations.monitor import FoundryMetrics, project_matches
 from foundry_finops.operations.pricing import (
     EffectivePrices,
@@ -86,15 +87,15 @@ class CostQueryTests(unittest.TestCase):
 
 class DeploymentTests(unittest.TestCase):
     def test_provisioned_capacity_is_never_turned_into_tokens_per_minute(self):
-        d = Deployment.from_dict({"name": "d", "sku": {"name": "GlobalProvisionedManaged", "capacity": 100},
+        d = DeploymentView.from_dict({"name": "d", "sku": {"name": "GlobalProvisionedManaged", "capacity": 100},
                                   "properties": {"serviceTier": "Priority", "deploymentState": "Paused",
                                                  "spilloverDeploymentName": "backup", "model": {"name": "m"}}})
         self.assertTrue(d.is_provisioned)
         self.assertIsNone(d.tokens_per_minute)
         self.assertEqual((d.service_tier, d.deployment_state, d.spillover_deployment), ("Priority", "Paused", "backup"))
-        std = Deployment.from_dict({"name": "s", "sku": {"name": "GlobalStandard", "capacity": 50}})
+        std = DeploymentView.from_dict({"name": "s", "sku": {"name": "GlobalStandard", "capacity": 50}})
         self.assertEqual(std.tokens_per_minute, 50_000)
-        self.assertIsNone(Deployment.from_dict({"name": "x"}).tokens_per_minute)
+        self.assertIsNone(DeploymentView.from_dict({"name": "x"}).tokens_per_minute)
 
 
 class CostControlTests(unittest.TestCase):
@@ -104,25 +105,43 @@ class CostControlTests(unittest.TestCase):
         self.body = {"name": "cap", "etag": '"e1"', "properties": {"category": "Cost", "amount": 5, "timeGrain": "Daily"}}
 
     def test_etag_is_read_and_if_match_is_sent(self):
+        from azure.core import MatchConditions
+        from azure.mgmt.cognitiveservices import models as cs
+
         self.s.add("GET", "/costControls/cap", 200, self.body)
-        self.assertEqual(self.fo.cost_controls.get("acct", "cap").etag, '"e1"')
+        self.assertEqual(self.fo.account_cost_controls.get("rg", "acct", "cap").etag, '"e1"')
+        # The official group: etag plus a match condition becomes If-Match.
         self.s.add("PATCH", "/costControls/cap", 200, self.body)
-        self.fo.cost_controls.update("acct", "cap", amount=9, if_match='"e1"')
+        patch = cs.CostControlPatch(properties=cs.CostControlPatchProperties(amount=9))
+        self.fo.account_cost_controls.update("rg", "acct", "cap", patch, etag='"e1"',
+                                             match_condition=MatchConditions.IfNotModified)
         self.assertEqual(self.s.calls[-1]["headers"]["If-Match"], '"e1"')
+        # The helper takes just the etag.
         self.s.add("PUT", "/costControls/cap", 200, self.body)
-        self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z"), if_match='"e1"')
+        spec = CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z")
+        cost_controls.upsert(self.fo, "rg", "acct", spec, etag='"e1"')
         self.assertEqual(self.s.calls[-1]["headers"]["If-Match"], '"e1"')
         self.s.add("DELETE", "/costControls/cap", 200, None)
-        self.fo.cost_controls.delete("acct", "cap", if_match='"e1"')
+        self.fo.account_cost_controls.delete("rg", "acct", "cap", etag='"e1"',
+                                             match_condition=MatchConditions.IfNotModified)
         self.assertEqual(self.s.calls[-1]["headers"]["If-Match"], '"e1"')
         with self.assertRaises(ValueError):
-            self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z"), only_if_new=True,
-                                                   if_match='"e1"')
+            cost_controls.upsert(self.fo, "rg", "acct", spec, only_if_new=True, etag='"e1"')
+
+    def test_a_changed_etag_is_a_412_precondition_error(self):
+        from azure.core import MatchConditions
+        from azure.core.exceptions import ResourceModifiedError
+
+        self.s.add("DELETE", "/costControls/cap", 412, {"error": {"code": "PreconditionFailed", "message": "etag"}})
+        with self.assertRaises(ResourceModifiedError):
+            self.fo.account_cost_controls.delete("rg", "acct", "cap", etag='"old"',
+                                                 match_condition=MatchConditions.IfNotModified)
 
     def test_feature_not_registered_is_explained(self):
         self.s.add("PUT", "/costControls/cap", 403, {"error": {"code": "FeatureNotRegistered", "message": "not registered"}})
+        spec = CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z")
         with self.assertRaisesRegex(ForbiddenError, "CostControlsByIdentity"):
-            self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z"))
+            cost_controls.upsert(self.fo, "rg", "acct", spec)
 
     def test_names_in_filters_are_plain_names(self):
         for bad in ("", " p", "a/b", "../x", "a%20b", ".", "x" * 65, "a?b"):
@@ -456,7 +475,9 @@ class CliTests(unittest.TestCase):
     def run_cli(self, argv, session):
         out, err = io.StringIO(), io.StringIO()
         client = make_client(session)
-        with mock.patch("foundry_finops.cli_reports.FinOpsClient", return_value=client), \
+        fake_class = mock.MagicMock(return_value=client)
+        fake_class.from_default_credential.return_value = client
+        with mock.patch("foundry_finops.cli_reports.FinOpsClient", fake_class), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             try:
                 rc = main(argv)

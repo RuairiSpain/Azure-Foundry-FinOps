@@ -23,6 +23,7 @@ from .errors import (
     ForbiddenError,
     HttpResponseError,
     NotFoundError,
+    PreconditionFailedError,
     ServiceError,
     ThrottledError,
     is_budget_exceeded,
@@ -308,7 +309,7 @@ def _to_error(resp: Response, method: str, url: str) -> HttpResponseError:
         403: ForbiddenError,
         404: NotFoundError,
         409: ConflictError,
-        412: ConflictError,
+        412: PreconditionFailedError,
         429: ThrottledError,
     }.get(s, ServiceError if s >= 500 else HttpResponseError)
     return cls(message, **kwargs)

@@ -74,7 +74,9 @@ class McpApp:
         if not s.subscription_id:
             raise ValueError("No subscription. Pass subscription_id or set FINOPS_SUBSCRIPTION_ID on the server.")
         cred = self.credentials.for_user(user) if (user and self.credentials) else None
-        client = FinOpsClient(s.subscription_id, cred, resource_group=s.resource_group or None)
+        rg = s.resource_group or None
+        client = (FinOpsClient(cred, s.subscription_id, resource_group=rg) if cred
+                  else FinOpsClient.from_default_credential(s.subscription_id, resource_group=rg))
         return LiveService(s, client)
 
     def _release(self, service: Any) -> None:

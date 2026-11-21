@@ -337,6 +337,22 @@ class CostControl(ArmResource):
             raise ValueError("end_date must be later than start_date")
 
     # ---------------------------------------------------------------- mapping
+    def to_resource(self, project: str | None = None) -> Any:
+        """The official model for ``client.account_cost_controls`` (or ``client.project_cost_controls`` when the cost
+        control is owned by a project): ``azure.mgmt.cognitiveservices.models.AccountCostControl`` / ``ProjectCostControl``.
+        Validates first. ``project`` sets the owning project."""
+        from azure.mgmt.cognitiveservices import models as cs
+
+        if project:
+            self.project = project
+        body = self.to_dict()
+        return cs.ProjectCostControl(body) if self.project else cs.AccountCostControl(body)
+
+    @classmethod
+    def from_resource(cls, resource: Any) -> CostControl:
+        """Build a spec from an official ``AccountCostControl`` / ``ProjectCostControl`` (or the REST JSON)."""
+        return cls.from_dict(resource.as_dict() if hasattr(resource, "as_dict") else resource)
+
     def to_dict(self) -> dict[str, Any]:
         self.validate()
         props: dict[str, Any] = {
@@ -1032,7 +1048,7 @@ class CostQuery:
 
 # ============================================================= Foundry resources
 @dataclass
-class FoundryAccount(ArmResource):
+class AccountView(ArmResource):
     location: str | None = None
     kind: str | None = None
     sku: str | None = None
@@ -1042,7 +1058,7 @@ class FoundryAccount(ArmResource):
     app_insights_connection_id: str | None = None
 
     @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> FoundryAccount:
+    def from_dict(cls, d: Mapping[str, Any]) -> AccountView:
         p = _props(d)
         return cls(
             d.get("id"), d.get("name"), d.get("type"), dict(d),
@@ -1053,14 +1069,14 @@ class FoundryAccount(ArmResource):
 
 
 @dataclass
-class FoundryProject(ArmResource):
+class ProjectView(ArmResource):
     location: str | None = None
     display_name: str | None = None
     description: str | None = None
     tags: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> FoundryProject:
+    def from_dict(cls, d: Mapping[str, Any]) -> ProjectView:
         p = _props(d)
         name = d.get("name") or ""
         return cls(
@@ -1070,7 +1086,7 @@ class FoundryProject(ArmResource):
 
 
 @dataclass
-class Deployment(ArmResource):
+class DeploymentView(ArmResource):
     """A model deployment. ``capacity`` is the TPM allocation in thousands for Standard SKUs."""
 
     model_name: str | None = None
@@ -1108,7 +1124,7 @@ class Deployment(ArmResource):
         return self.capacity * 1000 if self.capacity is not None else None
 
     @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> Deployment:
+    def from_dict(cls, d: Mapping[str, Any]) -> DeploymentView:
         p = _props(d)
         m = p.get("model") or {}
         sku = d.get("sku") or {}
@@ -1122,7 +1138,7 @@ class Deployment(ArmResource):
 
 
 @dataclass
-class QuotaUsage:
+class QuotaView:
     """One row of ``Microsoft.CognitiveServices/locations/usages`` (subscription quota)."""
 
     name: str
@@ -1145,7 +1161,7 @@ class QuotaUsage:
         return d
 
     @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> QuotaUsage:
+    def from_dict(cls, d: Mapping[str, Any]) -> QuotaView:
         n = d.get("name") or {}
         return cls(
             n.get("value", ""), n.get("localizedValue", n.get("value", "")),

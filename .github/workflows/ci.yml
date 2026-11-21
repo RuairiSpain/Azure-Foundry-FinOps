@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 5 * * 1"   # weekly: catches a new release of the Microsoft packages that changes what we mirror
 
 permissions:
   contents: read
@@ -46,7 +48,7 @@ jobs:
           python-version: "${{ matrix.python }}"
           cache: pip
           cache-dependency-path: foundry-finops/pyproject.toml
-      - run: pip install -e ".[dev,pandas]"
+      - run: pip install -e ".[dev,pandas,conformance]"
       - run: pytest --cov=foundry_finops
       - run: mypy
 

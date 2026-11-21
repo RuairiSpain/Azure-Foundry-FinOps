@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from azure.core import exceptions as _az
+
 BUDGET_CAUSE_HEADER = "x-ms-budget-cause"
 BUDGET_RESET_HEADER = "x-ms-budget-window-reset"
 #: Foundry documents both names for the ID of the cost control that blocked a request.
@@ -17,8 +19,14 @@ class FinOpsError(Exception):
     """Base class for every error raised by this package."""
 
 
-class HttpResponseError(FinOpsError):
-    """A REST call returned an unsuccessful status code."""
+class HttpResponseError(FinOpsError, _az.HttpResponseError):
+    """A REST call returned an unsuccessful status code.
+
+    It is an :class:`azure.core.exceptions.HttpResponseError`, so ``except azure.core.exceptions.HttpResponseError``
+    catches errors from this package and from the Microsoft Azure SDKs alike, and ``status_code``, ``reason`` and
+    ``error.code`` are populated the way those libraries populate them. ``code``, ``headers``, ``body``, ``method``
+    and ``url`` are extras.
+    """
 
     def __init__(
         self,
@@ -31,9 +39,10 @@ class HttpResponseError(FinOpsError):
         method: str | None = None,
         url: str | None = None,
     ) -> None:
-        super().__init__(message)
+        _az.HttpResponseError.__init__(self, message=message)
         self.message = message
         self.status_code = status_code
+        self.error = _az.ODataV4Format({"code": code, "message": message}) if code or message else None
         self.code = code
         self.headers = dict(headers or {})
         self.body = body
@@ -46,7 +55,7 @@ class HttpResponseError(FinOpsError):
         return f"HTTP {self.status_code}{code}: {self.message}{where}"
 
 
-class AuthenticationError(HttpResponseError):
+class AuthenticationError(HttpResponseError, _az.ClientAuthenticationError):
     """401 – the token was missing, expired or for the wrong audience."""
 
 
@@ -54,12 +63,16 @@ class ForbiddenError(HttpResponseError):
     """403 – the caller lacks an RBAC role (or an APIM token quota was exceeded)."""
 
 
-class NotFoundError(HttpResponseError):
+class NotFoundError(HttpResponseError, _az.ResourceNotFoundError):
     """404 – the resource does not exist."""
 
 
-class ConflictError(HttpResponseError):
-    """409/412 – concurrent write, ETag mismatch or If-None-Match create conflict."""
+class ConflictError(HttpResponseError, _az.ResourceExistsError):
+    """409 – concurrent write or an ``If-None-Match: *`` create that found the resource."""
+
+
+class PreconditionFailedError(ConflictError, _az.ResourceModifiedError):
+    """412 – the entity tag you sent no longer matches (somebody changed the resource)."""
 
 
 class ThrottledError(HttpResponseError):

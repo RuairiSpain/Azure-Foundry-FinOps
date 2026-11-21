@@ -15,6 +15,7 @@ from foundry_finops import (
     PriceSheet,
     RetryPolicy,
     StaticTokenCredential,
+    resources,
 )
 from foundry_finops._transport import Response, Transport, _parse_retry_after
 from foundry_finops.models import Budget, BudgetNotification, TimeGrain
@@ -44,10 +45,10 @@ class TransportTests(unittest.TestCase):
             def get_token(self, *scopes, **kw):
                 return type("T", (), {"token": next(tokens), "expires_on": 9_999_999_999})()
 
-        client = FinOpsClient("sub-1", Cred(), resource_group="rg", session=s)
-        s.add("GET", "/accounts", 200, {"value": []})  # later routes win in the fake, so add the fallback first
-        s.add("GET", "/accounts", 401, {"error": {"code": "ExpiredAuthenticationToken", "message": "expired"}}, times=1)
-        self.assertEqual(list(client.foundry.list_accounts()), [])
+        client = FinOpsClient(Cred(), "sub-1", resource_group="rg", session=s)
+        s.add("GET", "/topics", 200, {"value": []})  # later routes win in the fake, so add the fallback first
+        s.add("GET", "/topics", 401, {"error": {"code": "ExpiredAuthenticationToken", "message": "expired"}}, times=1)
+        self.assertEqual(list(client.event_grid.list_topics()), [])
         self.assertEqual([c["headers"]["Authorization"] for c in s.calls], ["Bearer t1", "Bearer t2"])
 
     def test_credential_failure_becomes_authentication_error(self):
@@ -70,8 +71,8 @@ class TransportTests(unittest.TestCase):
     def test_paging_loop_stops(self):
         s = FakeSession()
         client = make_client(s)
-        s.add("GET", "/accounts", 200, {"value": [{"name": "a"}], "nextLink": "https://management.azure.com/accounts?p=2"})
-        names = [a.name for a in client.foundry.list_accounts()]
+        s.add("GET", "/topics", 200, {"value": [{"name": "a"}], "nextLink": "https://management.azure.com/topics?p=2"})
+        names = [a["name"] for a in client.event_grid.list_topics()]
         self.assertLessEqual(len(names), 2)  # terminated instead of looping forever
 
     def test_connection_errors_retry_then_raise(self):
@@ -82,10 +83,10 @@ class TransportTests(unittest.TestCase):
                 Flaky.n += 1
                 raise requests.ConnectionError("boom")
 
-        client = FinOpsClient("sub-1", StaticTokenCredential("x"), session=Flaky(), retry=RetryPolicy(total=2))
+        client = FinOpsClient(StaticTokenCredential("x"), "sub-1", session=Flaky(), retry=RetryPolicy(total=2))
         client._transport.sleep = lambda s: None
         with self.assertRaises(Exception) as cm:
-            list(client.foundry.list_accounts())
+            list(client.event_grid.list_topics())
         self.assertEqual(Flaky.n, 3)
         self.assertEqual(getattr(cm.exception, "status_code", None), 0)
 
@@ -279,7 +280,7 @@ class SetCapacityTests(unittest.TestCase):
                               "spilloverDeploymentName": "backup", "provisioningState": "Succeeded"}}
         s.add("GET", "/deployments/gpt", 200, dep)
         s.add("PATCH", "/deployments/gpt", 200, {})
-        out = client.foundry.set_capacity("acct", "gpt", 50)
+        out = resources.set_deployment_capacity(client, "rg", "acct", "gpt", 50)
         patch = next(c for c in s.calls if c["method"] == "PATCH")
         self.assertEqual(patch["json"], {"sku": {"name": "GlobalStandard", "capacity": 50}})
         self.assertFalse([c for c in s.calls if c["method"] == "PUT"])

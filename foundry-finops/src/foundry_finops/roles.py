@@ -15,7 +15,7 @@ import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from .client import FinOpsClient
+from ._client import FinOpsClient
 from .errors import FinOpsError
 
 

@@ -129,7 +129,7 @@ def _discover_access(svc: Any, args: argparse.Namespace) -> Any:
     scopes = {
         "subscription": sub,
         "resource_group": fo.cost.resource_group_scope(),
-        "account": fo.foundry.account_id(args.account),
+        "account": fo.account_id(args.account),
         "apim": fo.apim.service_id(args.apim_service) if args.apim_service else fo.cost.resource_group_scope(),
         "anywhere": sub,
     }
@@ -193,6 +193,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("budgets", help="Cost Management budgets")
     p = sub.add_parser("quota", help="regional model quota")
     p.add_argument("--location", default=os.environ.get("FINOPS_LOCATION", "eastus2"))
+    sub.add_parser("migration-map", help="the Microsoft SDK call that matches each call of this package")
     p = sub.add_parser("kql", help="run a KQL query")
     p.add_argument("target", help="workspace ID or App Insights resource ID (ignored in --demo)")
     p.add_argument("query")
@@ -206,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("days", "hours"):
         if getattr(args, name, 1) < 1:
             ap.error(f"--{name} must be at least 1")
+    if args.cmd == "migration-map":
+        from .migration import table
+
+        print(table())
+        return 0
     if args.cmd in cli_reports.COMMANDS:
         return cli_reports.run(ap, args, _emit)
     if args.cmd == "download":

@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from . import queries
+from . import cost_controls, queries, resources
 from ._ids import odata_quote
 from .models import (
     Budget,
@@ -524,10 +524,11 @@ class LiveService(_Base):
     """Calls Azure. Each method maps to the SDK operations noted in its body."""
 
     def __init__(self, settings: Settings, client: Any = None) -> None:
-        from .client import FinOpsClient
+        from ._client import FinOpsClient
 
         self.settings = settings
-        self.fo = client or FinOpsClient(settings.subscription_id, resource_group=settings.resource_group or None)
+        self.fo = client or FinOpsClient.from_default_credential(
+            settings.subscription_id, resource_group=settings.resource_group or None)
 
     @property
     def _acct(self) -> str:
@@ -536,8 +537,15 @@ class LiveService(_Base):
         return self.settings.foundry_account
 
     @property
+    def _rg(self) -> str:
+        rg = self.settings.resource_group or self.fo.resource_group
+        if not rg:
+            raise ValueError("Set FINOPS_RESOURCE_GROUP")
+        return rg
+
+    @property
     def _account_id(self) -> str:
-        return self.fo.foundry.account_id(self._acct)
+        return self.fo.account_id(self._acct, self._rg)
 
     def info(self) -> dict[str, Any]:
         s = asdict(self.settings)
@@ -659,7 +667,7 @@ class LiveService(_Base):
         rows = []
         cache: dict[Any, tuple[float | None, str | None]] = {}
         now = datetime.now(timezone.utc)
-        for cc in self.fo.cost_controls.list_all(self._acct):
+        for cc in cost_controls.list_specs(self.fo, self._rg, self._acct):
             usage, note = self._estimate_usage(cc, now, cache) if estimate_usage else (None, None)
             rows.append(_with_status(cost_control_to_payload(cc, usage, note)))
         return rows
@@ -784,7 +792,7 @@ class LiveService(_Base):
         if any(not a.event_grid_connection_id for a in cc.alerts):
             # Foundry silently skips alerts that use a connection you made yourself, and the portal creates
             # the right one on first save, so reuse the one an existing cost control already points at.
-            conn = self.fo.cost_controls.find_event_grid_connection_id(self._acct)
+            conn = cost_controls.find_event_grid_connection_id(self.fo, self._rg, self._acct)
             if not conn:
                 raise ValueError(
                     "Alerts need an Event Grid connection. Save one alert in the Foundry portal first (it creates "
@@ -792,12 +800,15 @@ class LiveService(_Base):
                 )
             for a in cc.alerts:
                 a.event_grid_connection_id = a.event_grid_connection_id or conn
-        out = self.fo.cost_controls.create_or_update(self._acct, cc, project=cc.project)
+        out = cost_controls.upsert(self.fo, self._rg, self._acct, cc, project=cc.project)
         return _with_status(cost_control_to_payload(out))
 
     def delete_cost_control(self, name: str, project: str | None = None) -> None:
         self._guard()
-        self.fo.cost_controls.delete(self._acct, name, project=project)
+        if project:
+            self.fo.project_cost_controls.delete(self._rg, self._acct, project, name)
+        else:
+            self.fo.account_cost_controls.delete(self._rg, self._acct, name)
 
     # ---- budgets
     def list_budgets(self) -> list[dict[str, Any]]:
@@ -839,17 +850,17 @@ class LiveService(_Base):
     # ---- quota
     def list_deployments(self) -> list[dict[str, Any]]:
         return [dict(d.to_json(), tokens_per_minute=d.tokens_per_minute)
-                for d in self.fo.foundry.list_deployments(self._acct)]
+                for d in resources.list_deployments(self.fo, self._rg, self._acct)]
 
     def set_capacity(self, deployment: str, capacity: int) -> dict[str, Any]:
         self._guard()
         if capacity < 1:
             raise ValueError("capacity must be at least 1")
-        d = self.fo.foundry.set_capacity(self._acct, deployment, capacity)
+        d = resources.set_deployment_capacity(self.fo, self._rg, self._acct, deployment, capacity)
         return dict(d.to_json(), tokens_per_minute=d.tokens_per_minute)
 
     def list_quota(self) -> list[dict[str, Any]]:
-        return [q.to_json() for q in self.fo.quota.usages(self.settings.location) if q.limit]
+        return [q.to_json() for q in resources.list_quota(self.fo, self.settings.location) if q.limit]
 
     # ---- alerts
     def list_alerts(self) -> dict[str, list[dict[str, Any]]]:

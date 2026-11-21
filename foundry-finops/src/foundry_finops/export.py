@@ -19,9 +19,9 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import queries
+from . import queries, resources
+from ._client import FinOpsClient
 from .analysis import anomalies_from_table, ptu_headroom
-from .client import FinOpsClient
 from .errors import AuthenticationError, FinOpsError
 from .models import CostQuery, Table, _jsonable, metric_series_to_table
 from .operations.monitor import FoundryMetrics, project_matches
@@ -58,11 +58,18 @@ class ExportContext:
 
     @property
     def account_id(self) -> str:
-        return self.client.foundry.account_id(self.account)
+        return self.client.account_id(self.account)
 
     @property
     def project_id(self) -> str | None:
-        return self.client.foundry.account_id(self.account) + f"/projects/{self.project}" if self.project else None
+        return self.client.account_id(self.account) + f"/projects/{self.project}" if self.project else None
+
+    @property
+    def rg(self) -> str:
+        """The resource group of the Foundry resource (the official groups take it as an argument)."""
+        if not self.client.resource_group:
+            raise QuerySkipped("needs --resource-group")
+        return self.client.resource_group
 
     @property
     def start_dt(self) -> datetime:
@@ -260,13 +267,13 @@ def _budgets(ctx: ExportContext) -> Any:
 
 
 def _foundry_account(ctx: ExportContext) -> Any:
-    return ctx.client.foundry.get_account(ctx.account).to_json()
+    return resources.get_account(ctx.client, ctx.rg, ctx.account).to_json()
 
 
 def _foundry_projects(ctx: ExportContext) -> Any:
     if ctx.project:
-        return [ctx.client.foundry.get_project(ctx.account, ctx.project).to_json()]
-    return [p.to_json() for p in ctx.client.foundry.list_projects(ctx.account)]
+        return [resources.get_project(ctx.client, ctx.rg, ctx.account, ctx.project).to_json()]
+    return [p.to_json() for p in resources.list_projects(ctx.client, ctx.rg, ctx.account)]
 
 
 def _tags(ctx: ExportContext) -> Any:
@@ -282,7 +289,7 @@ def _alerts(ctx: ExportContext) -> Any:
 
 
 def _quota_models(ctx: ExportContext) -> Any:
-    return list(ctx.client.quota.models(ctx.location))
+    return [m.as_dict() for m in ctx.client.models.list(ctx.location)]
 
 
 def _price_sheet(ctx: ExportContext) -> Any:
@@ -350,10 +357,10 @@ QUERIES: list[Query] = [
     Query("foundry_account", "The Foundry resource", _foundry_account),
     Query("foundry_projects", "Foundry projects", _foundry_projects),
     Query("foundry_deployments", "Model deployments and their capacity (TPM)",
-          lambda c: [d.to_json() for d in c.client.foundry.list_deployments(c.account)]),
-    Query("foundry_connections", "Foundry resource connections", lambda c: list(c.client.foundry.list_connections(c.account))),
+          lambda c: [d.to_json() for d in resources.list_deployments(c.client, c.rg, c.account)]),
+    Query("foundry_connections", "Foundry resource connections", lambda c: list(resources.list_connections(c.client, c.rg, c.account))),
     Query("foundry_event_grid_topics", "Event Grid topics usable as cost-control alert destinations",
-          lambda c: list(c.client.foundry.list_event_grid_topics())),
+          lambda c: list(c.client.event_grid.list_topics())),
     # --- Azure Monitor
     Query("token_usage_by_deployment", "Tokens and requests by deployment (Azure Monitor)",
           _metrics("ModelDeploymentName", "token_usage_by_deployment")),
@@ -369,7 +376,7 @@ QUERIES: list[Query] = [
     Query("policy_violations", "Policy violations on the Foundry resource and what it contains (Azure Policy)",
           _policy_violations),
     Query("quota_usage", "Regional model quota (TPM) used and available",
-          lambda c: [q.to_json() for q in c.client.quota.usages(c.location)]),
+          lambda c: [q.to_json() for q in resources.list_quota(c.client, c.location)]),
     Query("quota_models", "Models and SKUs available in the region", _quota_models),
     Query("tags", "Tag inventory plus the tags on the Foundry resource and project", _tags),
     Query("alerts", "Metric alerts, log alerts and action groups", _alerts),

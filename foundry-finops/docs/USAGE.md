@@ -74,81 +74,106 @@ controls, tags, deployments, APIM) needs matching contributor roles.
 
 ## 3. Import and create a client
 
-Everything starts from `FinOpsClient`. It has one attribute for each group of queries:
-
-| Attribute | What it covers |
-|---|---|
-| `fo.cost` | Cost Management: cost queries, forecast, budgets, exports |
-| `fo.foundry` | Foundry accounts, projects, deployments, connections |
-| `fo.cost_controls` | Foundry cost controls (real-time budgets that alert or block) |
-| `fo.metrics` | Azure Monitor token and request metrics |
-| `fo.logs` | KQL against Log Analytics or Application Insights |
-| `fo.quota` | Regional model quota (TPM) |
-| `fo.tags` | Azure resource tags |
-| `fo.alerts` | Metric alerts, log alerts, action groups |
-| `fo.apim` | API Management AI gateway: products, subscriptions, token-limit policies |
-| `fo.pricing` | Azure retail prices and token cost estimates |
-| `fo.policy` | Azure Policy compliance (policy violations on a scope) |
-| `fo.authorization` | Your role assignments |
+`FinOpsClient` **is** the Microsoft management client for Foundry,
+`azure.mgmt.cognitiveservices.CognitiveServicesManagementClient` (version 15.1.0b1 or later, which has the cost
+controls), with the FinOps groups added. It takes the same arguments: `credential` first, then `subscription_id`.
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-fo = FinOpsClient("<subscription-id>", resource_group="rg-ai")
+fo = FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai")
 print(fo)                                    # FinOpsClient(subscription_id='...', resource_group='rg-ai')
 ```
 
 Use it as a context manager so the HTTP session is closed:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    for project in fo.foundry.list_projects("contoso-foundry"):
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    for project in fo.projects.list("rg-ai", "contoso-foundry"):          # an official group: the resource group comes first
         print(project.name)
 ```
 
-`resource_group` is the default for calls that need one. Most methods also accept `resource_group=` to override it.
+**Two kinds of groups.** The groups of the Microsoft client keep their Microsoft names, arguments and models, so code
+that uses them moves to the plain Microsoft client by changing the constructor and nothing else:
+
+| Attribute | What it covers |
+|---|---|
+| `fo.account_cost_controls`, `fo.project_cost_controls` | Foundry cost controls: `list`, `get`, `create_or_update`, `update`, `delete`, `check_existence` |
+| `fo.accounts`, `fo.projects`, `fo.deployments` | Foundry resources, projects and model deployments |
+| `fo.account_connections`, `fo.project_connections` | Connections, including the Event Grid connection of an alert |
+| `fo.usages`, `fo.models` | Regional quota and the models available in a region |
+
+The FinOps groups are what the Microsoft package doesn't cover. Their Microsoft counterparts, where there are any, are
+listed by `foundry-finops migration-map` and in [MIGRATION.md](MIGRATION.md):
+
+| Attribute | What it covers |
+|---|---|
+| `fo.cost` | Cost Management: cost queries, forecast, budgets, exports |
+| `fo.metrics` | Azure Monitor token and request metrics |
+| `fo.logs` | KQL against Log Analytics or Application Insights |
+| `fo.tags` | Azure resource tags |
+| `fo.alerts` | Metric alerts, log alerts, action groups |
+| `fo.apim` | API Management AI gateway: products, subscriptions, token-limit policies |
+| `fo.pricing` | Azure retail prices and token cost estimates |
+| `fo.policy` | Azure Policy compliance (policy violations on a scope) |
+| `fo.event_grid` | Event Grid topics (alert destinations) |
+| `fo.authorization` | Your role assignments |
+
+The functions in `foundry_finops.cost_controls` and `foundry_finops.resources` take the client as their first argument
+and use only the official groups, so they keep working with the plain Microsoft client.
+
+`resource_group` is the default for the FinOps groups. The official groups always take the resource group as their
+first argument, as in the Microsoft SDK.
 
 ### Choosing how to authenticate
 
 ```python
-from azure.identity import AzureCliCredential, ClientSecretCredential, ManagedIdentityCredential
+from azure.identity import AzureCliCredential, ClientSecretCredential, DefaultAzureCredential, ManagedIdentityCredential
 from foundry_finops import FinOpsClient, StaticTokenCredential
 
 sub = "<subscription-id>"
 
-fo = FinOpsClient(sub)                                                   # DefaultAzureCredential (the default)
-fo = FinOpsClient(sub, AzureCliCredential())                             # your `az login`
-fo = FinOpsClient(sub, ManagedIdentityCredential())                      # inside Azure
-fo = FinOpsClient(sub, ClientSecretCredential("<tenant-id>", "<client-id>", "<client-secret>"))
-fo = FinOpsClient(sub, StaticTokenCredential("<bearer-token>"))          # a token you already have (tests, scripts)
+fo = FinOpsClient(DefaultAzureCredential(), sub)                                         # environment, az login, managed identity
+fo = FinOpsClient(AzureCliCredential(), sub)                                             # your `az login`
+fo = FinOpsClient(ManagedIdentityCredential(), sub)                                      # inside Azure
+fo = FinOpsClient(ClientSecretCredential("<tenant-id>", "<client-id>", "<client-secret>"), sub)
+fo = FinOpsClient(StaticTokenCredential("<bearer-token>"), sub)                          # a token you already have (tests, scripts)
+fo = FinOpsClient.from_default_credential(sub)                                           # shortcut for the first line
 ```
 
-Any object with a `get_token(*scopes)` method works as a credential. Don't hard-code secrets: read them from the
-environment or a secret store.
+Any `azure.core.credentials.TokenCredential` works. Don't hard-code secrets: read them from the environment or a
+secret store.
 
 ### Options
 
 ```python
 import requests
+from azure.core import AzureClouds
+from azure.identity import DefaultAzureCredential
 
-from foundry_finops import US_GOV_CLOUD, ApiVersions, FinOpsClient, RetryPolicy
+from foundry_finops import ApiVersions, FinOpsClient, RetryPolicy
 
 session = requests.Session()
 session.proxies = {"https": "http://proxy.contoso.com:8080"}
 
 fo = FinOpsClient(
+    DefaultAzureCredential(authority="login.microsoftonline.us"),
     "<subscription-id>",
+    cloud_setting=AzureClouds.AZURE_US_GOVERNMENT,                # AZURE_PUBLIC_CLOUD (default), AZURE_US_GOVERNMENT, AZURE_CHINA_CLOUD
     resource_group="rg-ai",
-    cloud=US_GOV_CLOUD,                                    # PUBLIC_CLOUD (default), US_GOV_CLOUD or CHINA_CLOUD
-    api_versions=ApiVersions(cost_management="2025-03-01"),  # override any REST API version
+    api_version="2026-11-15-preview",                      # the official groups: one version for the whole client
+    api_versions=ApiVersions(cost_management="2025-03-01"),  # the FinOps groups: any REST API version
     retry=RetryPolicy(total=8, backoff_factor=1.0, max_backoff=90),
     timeout=120,                                           # seconds per request
     session=session,                                       # proxies, custom adapters, tests
 )
 ```
 
+The Microsoft client's own keyword arguments (`transport`, `logging_enable`, `retry_total`, ...) are passed through.
 Requests that fail with 408, 429 or 5xx are retried, honouring `Retry-After`. A 429 caused by a Foundry cost-control
 block is never retried ([section 7](#7-handle-errors-and-budget-blocks)).
 
@@ -156,10 +181,10 @@ Useful top-level imports (everything below is importable from `foundry_finops`):
 
 ```python
 from foundry_finops import (
-    FinOpsClient, PUBLIC_CLOUD, US_GOV_CLOUD, CHINA_CLOUD, ApiVersions, RetryPolicy, StaticTokenCredential,
-    # models
+    FinOpsClient, ApiVersions, RetryPolicy, StaticTokenCredential,
+    # models and views
     Budget, BudgetNotification, BudgetCategory, BudgetSharing, CostControl, Threshold, ThresholdType, TimeGrain,
-    CostQuery, Granularity, Deployment, MetricAlert, LogAlert, ActionGroup, ApimProduct, ApimSubscription, Table,
+    CostQuery, Granularity, DeploymentView, MetricAlert, LogAlert, ActionGroup, ApimProduct, ApimSubscription, Table,
     # APIM policy builders and prices
     LlmTokenLimit, LlmEmitTokenMetric, PriceSheet, ModelPrice, FoundryMetrics,
     # ids and errors
@@ -174,10 +199,11 @@ from foundry_finops import (
 Cost, metrics and log queries return a `Table`. It is iterable and converts to the formats you need:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    table = fo.cost.cost_by("project", scope=fo.foundry.account_id("contoso-foundry"), days=7)
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    table = fo.cost.cost_by("project", scope=fo.account_id("contoso-foundry"), days=7)
 
     print(table.column_names)          # ['Cost', 'UsageDate', 'TagKey', 'TagValue', 'Currency']
     print(len(table))                  # number of rows
@@ -190,20 +216,26 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
     frame = table.to_pandas()          # pandas.DataFrame (needs the pandas extra)
 ```
 
-Other methods return typed objects (`CostControl`, `Budget`, `Deployment` and so on). Each has `to_json()` for a
-JSON-friendly dict, and the original service response is kept in `.raw`:
+The FinOps groups return typed objects (`Budget`, `MetricAlert` and so on). Each has `to_json()` for a JSON-friendly
+dict, and the original service response is kept in `.raw`. The Microsoft groups return the Microsoft models, which have
+`as_dict()`:
 
 ```python
 import json
 
-from foundry_finops import FinOpsClient
+from azure.identity import DefaultAzureCredential
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    for dep in fo.foundry.list_deployments("contoso-foundry"):
+from foundry_finops import FinOpsClient, resources
+
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    for dep in resources.list_deployments(fo, "rg-ai", "contoso-foundry"):          # a FinOps view
         print(json.dumps(dep.to_json(), indent=2))
+    for model in fo.deployments.list("rg-ai", "contoso-foundry"):                   # the Microsoft model
+        print(json.dumps(model.as_dict(), indent=2))
 ```
 
-`list_*` methods return iterators that follow paging for you. Wrap them in `list(...)` if you need a list.
+`list_*` methods of the FinOps groups return iterators that follow paging for you, and the Microsoft `list` methods
+return `ItemPaged`. Wrap either in `list(...)` if you need a list.
 
 ---
 
@@ -230,10 +262,11 @@ by those tags, query at the Foundry resource's scope.
 **Cost grouped by a tag or dimension**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
 
     by_project = fo.cost.cost_by("project", scope=account_id, days=30)               # Foundry project tag
     by_agent = fo.cost.cost_by("agent.name", scope=account_id, days=30)              # agent tag
@@ -251,10 +284,11 @@ capitalised, pass `dimension=False`.
 **Build your own query**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import CostQuery, FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
 
     q = (
         CostQuery.between("2026-01-01", "2026-03-31")      # or CostQuery.last_days(30) / CostQuery.month_to_date()
@@ -276,10 +310,11 @@ billing scope. Without it the client's resource group (or subscription) is used.
 **Forecast and dimensions**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import CostQuery, FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
 
     future = CostQuery.between("2026-12-01", "2026-12-31").daily()
     forecast = fo.cost.forecast(future, scope=account_id)               # actual to date plus forecast
@@ -289,10 +324,11 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
 **Named time frames, OR and NOT filters, quantity, and saved queries**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import CostQuery, FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
 
     last_month = CostQuery.last_month().group_by_tag("project")        # also week_to_date, billing_month_to_date,
     table = fo.cost.query(last_month, scope=account_id)                #      last_billing_month, current_month
@@ -315,10 +351,11 @@ A query can group by at most two things; a third raises `ValueError` before anyt
 reserved cost, and purchases against usage (`fo.cost.dimensions(scope=...)` lists the dimensions your scope supports):
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
     print(fo.cost.cost_by("PricingModel", scope=account_id, days=30, daily=False).to_records())
     print(fo.cost.cost_by("ChargeType", scope=account_id, days=30, daily=False).to_records())
 ```
@@ -355,9 +392,10 @@ Budgets alert on billed cost. They cannot block requests (use [cost controls](#5
 **Budgets**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import Budget, BudgetNotification, FinOpsClient, TimeGrain
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     for b in fo.cost.list_budgets():                                    # at the client's resource group scope
         print(b.name, b.amount, b.current_spend, b.forecast_spend, b.currency)
 
@@ -388,9 +426,10 @@ compare them with each notification's threshold. It makes no extra call and says
 reported no spend. It is the budget's own arithmetic, not a record of emails that were sent:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     for b in fo.cost.list_budgets():
         print(b.name, b.percent_used(), b.percent_forecast())
         for n in b.notification_status():
@@ -400,9 +439,10 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
 **Scheduled exports to storage (the recommended way to get bulk billing data)**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     fo.cost.create_or_update_export(
         "foundry-daily",
         storage_account_id="/subscriptions/<subscription-id>/resourceGroups/rg-data/providers/Microsoft.Storage/storageAccounts/finopsdata",
@@ -448,53 +488,57 @@ foundry-finops download --only budgets,budget_status,cost_exports --start 2026-0
 
 ### 5.3 Foundry accounts, projects and deployments
 
+These are the Microsoft client's own groups, so they take the resource group first and return the Microsoft models.
+`foundry_finops.resources` adds read views with the numbers FinOps work needs (tokens per minute, provisioned or not).
+
 ```python
-from foundry_finops import FinOpsClient
+from azure.identity import DefaultAzureCredential
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    acct = "contoso-foundry"
+from foundry_finops import FinOpsClient, resources
 
-    for a in fo.foundry.list_accounts():                    # Foundry (AIServices) resources in the resource group
-        print(a.name, a.location, a.kind, a.sku)
-    account = fo.foundry.get_account(acct)
-    account_id = fo.foundry.account_id(acct)                # the ARM resource ID, used as a scope elsewhere
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    rg, acct = "rg-ai", "contoso-foundry"
 
-    for p in fo.foundry.list_projects(acct):
-        print(p.name, p.display_name)
-    project = fo.foundry.get_project(acct, "fraud-risk")
+    for a in fo.accounts.list_by_resource_group(rg):            # Foundry (AIServices) resources in the resource group
+        print(a.name, a.location, a.kind, a.sku.name)
+    account = fo.accounts.get(rg, acct)
+    account_id = fo.account_id(acct)                            # the ARM resource ID, used as a scope elsewhere
 
-    for d in fo.foundry.list_deployments(acct):
-        print(d.name, d.model_name, d.model_version, d.sku_name, d.capacity, d.tokens_per_minute)
-        print("  ", d.is_provisioned, d.service_tier, d.deployment_state, d.spillover_deployment)
-    deployment = fo.foundry.get_deployment(acct, "gpt-5.4-mini")
+    for p in fo.projects.list(rg, acct):
+        print(p.name, p.properties.display_name)
+    project = fo.projects.get(rg, acct, "fraud-risk")
 
-    for conn in fo.foundry.list_connections(acct):          # raw dicts; includes the Event Grid connection for alerts
-        print(conn.get("name"))
-    topics = list(fo.foundry.list_event_grid_topics())      # Event Grid topics in the subscription
+    for d in fo.deployments.list(rg, acct):
+        print(d.name, d.properties.model.name, d.sku.name, d.sku.capacity, d.properties.service_tier)
+    deployment = fo.deployments.get(rg, acct, "gpt-5.4-mini")
+
+    for conn in fo.account_connections.list(rg, acct):          # includes the Event Grid connection for alerts
+        print(conn.name)
+    topics = list(fo.event_grid.list_topics())                  # Event Grid topics in the subscription (a FinOps group)
+
+    # The same deployments as FinOps views: tokens per minute, provisioned or not, tier, state, spillover
+    for v in resources.list_deployments(fo, rg, acct):
+        print(v.name, v.model_name, v.sku_name, v.capacity, v.tokens_per_minute, v.is_provisioned, v.service_tier)
+    view = resources.get_deployment(fo, rg, acct, "gpt-5.4-mini")
+    print(resources.get_account(fo, rg, acct).location, [p.name for p in resources.list_projects(fo, rg, acct)])
 ```
 
 **Change a deployment's capacity (its share of regional quota)**
 
 ```python
-from foundry_finops import FinOpsClient
+from azure.identity import DefaultAzureCredential
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    fo.foundry.set_capacity("contoso-foundry", "gpt-5.4-mini", capacity=50)        # 50 = 50,000 TPM on Standard SKUs
+from foundry_finops import FinOpsClient, resources
 
-    fo.foundry.create_or_update_deployment(
-        "contoso-foundry", "gpt-5.4-mini-eu",
-        model_name="gpt-5.4-mini", model_version="2026-03-01", sku_name="GlobalStandard", capacity=20,
-        tags={"team": "risk"},
-    )
-    fo.foundry.delete_deployment("contoso-foundry", "gpt-5.4-mini-eu")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    resources.set_deployment_capacity(fo, "rg-ai", "contoso-foundry", "gpt-5.4-mini", capacity=50)   # 50 = 50,000 TPM on Standard SKUs
 ```
 
-These calls wait until Azure finishes (`wait=True`). Pass `wait=False` to return immediately.
-
-`set_capacity` changes only `sku.capacity` (a PATCH), so a `Priority` service tier, a spillover deployment or a paused
-state stay as they were. For provisioned SKUs (`ProvisionedManaged`, `GlobalProvisionedManaged`, ...) the capacity is in
-PTUs and `tokens_per_minute` is `None`: PTUs are not converted to tokens. `service_tier`, `deployment_state` and
-`spillover_deployment` need the 2026-11-01 API version or newer (the default).
+`set_deployment_capacity` changes only `sku.capacity` (a PATCH through `fo.deployments.begin_update`), so a `Priority`
+service tier, a spillover deployment or a paused state stay as they were, and waits until Azure finishes. To create or
+delete a deployment use the Microsoft calls `fo.deployments.begin_create_or_update` and `fo.deployments.begin_delete`.
+For provisioned SKUs (`ProvisionedManaged`, `GlobalProvisionedManaged`, ...) the capacity is in PTUs and
+`tokens_per_minute` is `None`: PTUs are not converted to tokens.
 
 **CLI**
 
@@ -507,95 +551,139 @@ foundry-finops download --only foundry_account,foundry_projects,foundry_deployme
 ### 5.4 Foundry cost controls
 
 Cost controls are real-time budgets that alert (through Event Grid) or block requests (HTTP 429) when spend or tokens
-reach a threshold. This is a preview API. Changes take effect within about 15 minutes.
+reach a threshold. This is a preview API (`2026-11-15-preview`). Changes take effect within about 15 minutes.
 
-**Read**
+Create, read, update and delete are the Microsoft groups `fo.account_cost_controls` (a Foundry resource's cost controls)
+and `fo.project_cost_controls` (a project's), with the Microsoft models. What this package adds is in
+`foundry_finops.cost_controls`: an authoring spec that validates offline, and helpers for what the portal does around
+them. Those helpers use only the official groups, so they also run on the plain Microsoft client.
+
+**Read, with the Microsoft calls**
 
 ```python
+from azure.identity import DefaultAzureCredential
+
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    acct = "contoso-foundry"
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    rg, acct = "rg-ai", "contoso-foundry"
 
-    for cc in fo.cost_controls.list(acct):                              # the Foundry resource's own controls
-        print(cc.name, cc.category, cc.amount, cc.time_grain, cc.filters, cc.alerts, cc.blocks)
-    project_controls = list(fo.cost_controls.list(acct, project="fraud-risk"))
-    everything = list(fo.cost_controls.list_all(acct))                  # resource level plus every project
-    one = fo.cost_controls.get(acct, "fraud-risk-monthly", project="fraud-risk")
-    conn_id = fo.cost_controls.find_event_grid_connection_id(acct)      # reuse the connection Foundry already made
+    for cc in fo.account_cost_controls.list(rg, acct):                       # the Foundry resource's own controls
+        p = cc.properties
+        print(cc.name, p.category, p.amount, p.time_grain, p.time_period.end_date)
+    project_controls = list(fo.project_cost_controls.list(rg, acct, "fraud-risk"))
+    one = fo.project_cost_controls.get(rg, acct, "fraud-risk", "fraud-risk-monthly")
+    print(one.etag, one.properties.notifications, one.properties.provider_properties)
+    fo.account_cost_controls.check_existence(rg, acct, "fraud-risk-monthly")   # HEAD; see exists() below
+```
+
+**Read, as flat specs**
+
+```python
+from azure.identity import DefaultAzureCredential
+
+from foundry_finops import FinOpsClient, cost_controls
+
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    rg, acct = "rg-ai", "contoso-foundry"
+
+    for cc in cost_controls.list_specs(fo, rg, acct):                   # resource level plus every project
+        print(cc.name, cc.project, cc.category, cc.amount, cc.time_grain, cc.filters, cc.alerts, cc.blocks)
+    everything = list(cost_controls.list_all(fo, rg, acct))             # the same as Microsoft models
+    conn_id = cost_controls.find_event_grid_connection_id(fo, rg, acct)  # reuse the connection Foundry already made
 ```
 
 **Create or update**
 
 ```python
-from foundry_finops import BudgetCategory, BudgetSharing, CostControl, FinOpsClient, Threshold, TimeGrain
+from azure.identity import DefaultAzureCredential
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    acct = "contoso-foundry"
-    conn_id = fo.cost_controls.find_event_grid_connection_id(acct)
+from foundry_finops import BudgetCategory, BudgetSharing, CostControl, FinOpsClient, Threshold, TimeGrain, cost_controls
+
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    rg, acct = "rg-ai", "contoso-foundry"
+    conn_id = cost_controls.find_event_grid_connection_id(fo, rg, acct)
 
     # $500 a month for each agent in one project: alert at 80 %, block at 100 %.
-    # The service allows one alert and one Block action per cost control.
-    fo.cost_controls.create_or_update(
-        acct,
-        CostControl(
-            name="fraud-risk-monthly",
-            category=BudgetCategory.COST,                       # or BudgetCategory.TOKENS
-            amount=500,
-            time_grain=TimeGrain.MONTHLY,                       # Daily, Weekly or Monthly
-            start_date="2026-12-01",                            # both dates are required (UTC)
-            end_date="2027-07-01",                              # counting stops at the start of this day
-            filters={"project": ["fraud-risk"]},                # project, deployment, agent, sessionId, tokenType
-            sharing=BudgetSharing.PER_AGENT,                    # SHARED, PER_AGENT, PER_SESSION, PER_PROJECT
-            alert=Threshold(80, event_grid_connection_id=conn_id),
-            block=Threshold(100),
-        ),
-        project="fraud-risk",                                   # create it inside the project
-        only_if_new=True,                                       # fail with ConflictError if it already exists
+    # The service allows one alert and one Block action per cost control, and requires both dates.
+    spec = CostControl(
+        name="fraud-risk-monthly",
+        category=BudgetCategory.COST,                       # or BudgetCategory.TOKENS
+        amount=500,
+        time_grain=TimeGrain.MONTHLY,                       # Daily, Weekly or Monthly
+        start_date="2026-12-01",                            # both dates are required (UTC)
+        end_date="2027-07-01",                              # counting stops at the start of this day
+        filters={"project": ["fraud-risk"]},                # project, deployment, agent, sessionId, tokenType
+        sharing=BudgetSharing.PER_AGENT,                    # SHARED, PER_AGENT, PER_SESSION, PER_PROJECT
+        alert=Threshold(80, event_grid_connection_id=conn_id),
+        block=Threshold(100),
     )
+    spec.validate()                                         # offline: raises ValueError for anything the service refuses
 
-    # Change one property. The budget type (category) can't be changed. Pass at least one property: the service
-    # treats an empty update as "clear everything", so the SDK refuses it.
-    fo.cost_controls.update(acct, "fraud-risk-monthly", project="fraud-risk", amount=750)
+    # With the helper (validates, then calls the official create_or_update):
+    cost_controls.upsert(fo, rg, acct, spec, project="fraud-risk", only_if_new=True)   # only_if_new: If-None-Match: *
 
-    # Optimistic concurrency: change or delete only if nobody edited it since you read it
-    current = fo.cost_controls.get(acct, "fraud-risk-monthly", project="fraud-risk")
-    fo.cost_controls.update(acct, "fraud-risk-monthly", project="fraud-risk", amount=800, if_match=current.etag)
-    fo.cost_controls.delete(acct, "fraud-risk-monthly", project="fraud-risk", if_match=current.etag)
+    # The same with the Microsoft call: the spec converts to the Microsoft model.
+    resource = spec.to_resource(project="fraud-risk")       # a ProjectCostControl
+    fo.project_cost_controls.create_or_update(rg, acct, "fraud-risk", spec.name, resource)
+```
+
+**Change one property, with the Microsoft models**
+
+```python
+from azure.core import MatchConditions
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.cognitiveservices import models
+
+from foundry_finops import FinOpsClient
+
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    rg, acct = "rg-ai", "contoso-foundry"
+    current = fo.project_cost_controls.get(rg, acct, "fraud-risk", "fraud-risk-monthly")
+
+    # PATCH: only the properties you give change. The budget type (category) can't be changed.
+    patch = models.CostControlPatch(properties=models.CostControlPatchProperties(amount=800))
+    fo.project_cost_controls.update(rg, acct, "fraud-risk", "fraud-risk-monthly", patch,
+                                    etag=current.etag, match_condition=MatchConditions.IfNotModified)   # If-Match
+
+    fo.project_cost_controls.delete(rg, acct, "fraud-risk", "fraud-risk-monthly",
+                                    etag=current.etag, match_condition=MatchConditions.IfNotModified)
 ```
 
 Create cost controls one at a time: concurrent creates on one Foundry resource can fail with HTTP 409. A cost control
 has **at most one alert and one Block action**. Filters on `agent` or `sessionId` need the feature
 `Microsoft.CognitiveServices/CostControlsByIdentity` registered on the subscription; without it the service answers
-403 `FeatureNotRegistered` and the SDK adds the registration command to the error message.
+403 `FeatureNotRegistered`, and `cost_controls.upsert` adds the registration command to the error message.
 
 **Check, trim and manage cost controls**
 
 ```python
-from foundry_finops import FinOpsClient
+from azure.identity import DefaultAzureCredential
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    acct = "contoso-foundry"
+from foundry_finops import FinOpsClient, cost_controls
 
-    # Does it exist? (a HEAD request, no body)
-    fo.cost_controls.exists(acct, "fraud-risk-monthly", project="fraud-risk")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    rg, acct = "rg-ai", "contoso-foundry"
+
+    # Does it exist? (a HEAD request; False instead of an error when it doesn't)
+    cost_controls.exists(fo, rg, acct, "fraud-risk-monthly", project="fraud-risk")
 
     # Remove only the alert or only the Block action; everything else stays (a PATCH with a null entry)
-    fo.cost_controls.remove_alert(acct, "fraud-risk-monthly", project="fraud-risk")
-    fo.cost_controls.remove_block(acct, "fraud-risk-monthly", project="fraud-risk")
+    cost_controls.remove_alert(fo, rg, acct, "fraud-risk-monthly", project="fraud-risk")
+    cost_controls.remove_block(fo, rg, acct, "fraud-risk-monthly", project="fraud-risk")
 
     # What a project's Cost Control tab lists, and its Project budget card
-    for cc in fo.cost_controls.applicable(acct, "fraud-risk"):          # its own plus the resource's that apply
+    for cc in cost_controls.applicable(fo, rg, acct, "fraud-risk"):       # its own plus the resource's that apply
         print(cc.name, cc.project or "resource", cc.amount)
-    card = fo.cost_controls.project_budget(acct, "fraud-risk")           # lowest whole-project spending budget
+    card = cost_controls.get_project_budget(fo, rg, acct, "fraud-risk")    # lowest whole-project spending budget
     print(card.budget and card.budget.name, card.count, card.per_agent_or_session)
 
     # A project that has cost controls can't be deleted (409 CostControlInUse): delete its own first
-    fo.cost_controls.delete_project_cost_controls(acct, "fraud-risk")
+    cost_controls.delete_project_cost_controls(fo, rg, acct, "fraud-risk")
 
     # "Usage data": the Application Insights connection that records usage for the account's cost controls
-    conn = fo.cost_controls.get_usage_connection(acct)
-    fo.cost_controls.set_usage_connection(acct, conn)                    # None clears it; shared by every control
+    conn = cost_controls.get_usage_connection(fo, rg, acct)
+    cost_controls.set_usage_connection(fo, rg, acct, conn)                # None clears it; shared by every control
 ```
 
 **State of a cost control.** `evaluate_cost_control` applies the portal's definitions: Scheduled (before the start
@@ -605,7 +693,6 @@ date) and Active (usage can't be read). It needs a usage figure from you: Foundr
 `LiveService` estimates one (below). The portal's *Needs setup* state isn't modelled.
 
 ```python
-from datetime import datetime, timezone
 from foundry_finops import evaluate_cost_control
 
 status = evaluate_cost_control(amount=500, usage=410, alert_percents=[80], block_percents=[100])
@@ -632,7 +719,6 @@ for row in svc.list_cost_controls():
 
 ```bash
 foundry-finops cost-controls contoso-foundry             # includes estimated usage, percent used and state
-foundry-finops --format json cost-controls contoso-foundry
 ```
 
 ### 5.5 Token usage (Azure Monitor metrics)
@@ -641,10 +727,11 @@ Metrics are near real time and available per Foundry resource and deployment (no
 days.
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient, FoundryMetrics
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
 
     # Tokens in the last 24 hours, one series per deployment
     series = fo.metrics.query(account_id, FoundryMetrics.TOKENS, hours=24)
@@ -671,10 +758,11 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
 Management stays the system of record. Dimension values are returned exactly as Azure reports them:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient, FoundryMetrics
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
 
     totals = fo.metrics.estimated_cost_totals(account_id, hours=24)                       # per ProjectId, highest first
     by_deploy = fo.metrics.estimated_cost_totals(account_id, hours=24, by=(FoundryMetrics.DEPLOYMENT_DIMENSION,))
@@ -710,9 +798,10 @@ Run KQL against a Log Analytics workspace (by its workspace ID, a GUID) or an Ap
 resource ID). This is where client-side tracing and APIM token metrics land.
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient, queries
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     workspace_id = "<workspace-guid>"
     app_insights_id = "/subscriptions/<subscription-id>/resourceGroups/rg-ai/providers/microsoft.insights/components/finops-ai"
 
@@ -738,16 +827,24 @@ foundry-finops download --logs-target <workspace-id> --start 2026-01-01 --end 20
 
 ### 5.7 Quota
 
-```python
-from foundry_finops import FinOpsClient
+Quota is the Microsoft group `fo.usages` (and `fo.models` for the models a region offers).
+`resources.list_quota` adds `available` and `percent_used`.
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    for q in fo.quota.usages("eastus2"):                       # subscription quota per model and SKU, in thousands of TPM
+```python
+from azure.identity import DefaultAzureCredential
+
+from foundry_finops import FinOpsClient, resources
+
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    for u in fo.usages.list("eastus2"):                         # subscription quota per model and SKU
+        print(u.name.localized_value, u.current_value, u.limit)
+
+    for q in resources.list_quota(fo, "eastus2"):               # the same with the FinOps numbers
         print(q.display_name, q.current_value, q.limit, q.available, q.percent_used)
 
-    only_openai = list(fo.quota.usages("eastus2", filter="contains(name.value, 'OpenAI')"))
-    models = list(fo.quota.models("eastus2"))                  # models and SKUs available in the region
-    in_account = list(fo.quota.account_usages("contoso-foundry"))
+    only_openai = list(resources.list_quota(fo, "eastus2", filter="contains(name.value, 'OpenAI')"))
+    models = list(fo.models.list("eastus2"))                    # models and SKUs available in the region
+    in_account = list(fo.accounts.list_usages("rg-ai", "contoso-foundry"))
 ```
 
 **CLI**
@@ -764,10 +861,11 @@ Tags such as `team`, `cost-center` and `owner` are how you split cost beyond Fou
 tags. Any scope (subscription, resource group or resource) works.
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
 
     print(fo.tags.get(account_id))                                          # {'team': 'risk'}
     fo.tags.merge(account_id, {"team": "risk", "cost-center": "CC-4410"})   # add or update, keep the others
@@ -795,10 +893,11 @@ foundry-finops download --only tags --start 2026-01-01 --end 2026-01-31
 **Metric alert on token use**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import ActionGroup, FinOpsClient, MetricAlert
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
 
     group = fo.alerts.create_or_update_action_group(ActionGroup(
         name="finops-oncall", short_name="finops",
@@ -821,9 +920,10 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
 **Log alert on a KQL result (for example tokens per team from your own tracing)**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient, LogAlert
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     fo.alerts.create_or_update_log_alert(LogAlert(
         name="team-token-spike",
         location="eastus2",                                        # region of the target workspace
@@ -838,9 +938,10 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
 **List, read and delete**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     metric_alerts = list(fo.alerts.list_metric_alerts())
     log_alerts = list(fo.alerts.list_log_alerts())
     groups = list(fo.alerts.list_action_groups())
@@ -866,9 +967,10 @@ Put API Management in front of Foundry to give each team its own key, token limi
 **Read**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     gw = "contoso-ai-gateway"
 
     services = list(fo.apim.list_services())
@@ -885,9 +987,10 @@ Policy scopes are `"global"`, `"product:<id>"`, `"api:<id>"` and `"operation:<ap
 **Create a team: product, subscription key and token limit**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import ApimProduct, ApimSubscription, FinOpsClient, LlmEmitTokenMetric, LlmTokenLimit
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     gw = "contoso-ai-gateway"
 
     fo.apim.create_or_update_product(
@@ -916,10 +1019,11 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
 **Edit the policy XML yourself**
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient, LlmTokenLimit
 from foundry_finops.operations.apim import upsert_policy_fragment
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     gw = "contoso-ai-gateway"
     xml, etag = fo.apim.get_policy_with_etag(gw, "api:foundry-openai")                  # keep the ETag
     new_xml = upsert_policy_fragment(xml, LlmTokenLimit(tokens_per_minute=5_000).to_xml())
@@ -940,9 +1044,10 @@ Three sources of prices, from least to most accurate for you. Billed cost always
 **1. Public retail prices** (no sign-in), optionally reduced by a discount **you** supply:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient, PriceSheet
 
-with FinOpsClient("<subscription-id>") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>") as fo:
     for item in fo.pricing.retail_prices("serviceName eq 'Foundry Models' and armRegionName eq 'eastus2'"):
         print(item["meterName"], item["unitOfMeasure"], item["retailPrice"])      # raw price items for any OData filter
 
@@ -965,11 +1070,12 @@ entry `gpt-5.4-mini`, but `gpt-4o-mini` never matches `gpt-4o`.
 discounts and agreements apply to you:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 from foundry_finops.operations.pricing import effective_discounts
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
 
     effective = fo.cost.effective_prices(scope=account_id, days=30)     # one Cost Management query: cost + quantity by meter
     for r in effective.rows:
@@ -1001,9 +1107,10 @@ and price kind.
 ### 5.12 Your Azure roles
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     me = fo.authorization.principal_id()                       # object ID of the signed-in identity
     for a in fo.authorization.role_assignments(me):            # direct and group-inherited assignments
         props = a["properties"]
@@ -1031,10 +1138,11 @@ with open("foundry-cost-reader.json", "w") as f:
 The fleet's policy cards read Azure Policy compliance (`Microsoft.PolicyInsights/*/read`):
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    account_id = fo.foundry.account_id("contoso-foundry")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.account_id("contoso-foundry")
     for row in fo.policy.violations_by_resource(account_id):       # most violations first
         print(row["resource_id"], row["violations"], row["policies"])
     deny = list(fo.policy.states(account_id, filter="PolicyDefinitionAction eq 'deny'"))   # raw latest states
@@ -1055,11 +1163,12 @@ because Cost Management returns no row when nothing was charged. This finds outl
 planned launch, and it is not Azure's own anomaly alerting:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 from foundry_finops.analysis import anomalies_from_table
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
-    table = fo.cost.cost_by("project", scope=fo.foundry.account_id("contoso-foundry"), days=60)
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
+    table = fo.cost.cost_by("project", scope=fo.account_id("contoso-foundry"), days=60)
     for a in anomalies_from_table(table, window=28, min_history=7, threshold=3.5, min_change=5.0, direction="up"):
         print(a.date, a.group, a.cost, "vs baseline", a.baseline, f"({a.percent_change}%)", "score", a.score)
 ```
@@ -1069,14 +1178,15 @@ measure you choose. The weights are your input and the result is an allocation, 
 rounded total exactly:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import CostQuery, FinOpsClient, FoundryMetrics
 from foundry_finops.analysis import allocate_cost
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     apim_id = "/subscriptions/<subscription-id>/resourceGroups/rg-ai/providers/Microsoft.ApiManagement/service/contoso-ai-gateway"
     total = sum(r["Cost"] for r in fo.cost.query(CostQuery.last_days(30).total(), scope=apim_id))
 
-    series = fo.metrics.query(fo.foundry.account_id("contoso-foundry"), [FoundryMetrics.TOTAL_TOKENS], hours=30 * 24,
+    series = fo.metrics.query(fo.account_id("contoso-foundry"), [FoundryMetrics.TOTAL_TOKENS], hours=30 * 24,
                               interval="P1D", split_by=[FoundryMetrics.DEPLOYMENT_DIMENSION])
     tokens = {s.dimensions["modeldeploymentname"]: s.total for s in series}
 
@@ -1090,10 +1200,11 @@ reached 100 percent (Microsoft documents that calls are throttled with HTTP 429 
 whose name ends in `.<sku>.<model>`. Anything Azure didn't return is `None`:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient
 from foundry_finops.analysis import ptu_headroom
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     for r in ptu_headroom(fo, "contoso-foundry", hours=24):
         print(r["deployment"], r["capacity_ptu"], r["utilization_avg_percent"], r["utilization_max_percent"],
               r["at_or_over_100_percent"], r["quota_used"], r["quota_limit"], r["quota_available"])
@@ -1147,33 +1258,41 @@ The records appear in Application Insights and can be queried with the ready-mad
 `BUDGET_BLOCKS`, or all of them in `queries.ALL`):
 
 ```python
+from azure.identity import DefaultAzureCredential
 from foundry_finops import FinOpsClient, queries
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     print(fo.logs.query("<app-insights-resource-id>", queries.TOKENS_BY_TEAM, timespan="P30D").to_records())
 ```
 
 ## 7. Handle errors and budget blocks
 
-All errors derive from `FinOpsError`. HTTP failures carry the status, the service's error code, the response headers and
-the request:
+Errors from this package derive from `FinOpsError` and **are also `azure.core.exceptions` errors**:
+`NotFoundError` is a `ResourceNotFoundError`, `ConflictError` a `ResourceExistsError`, `PreconditionFailedError` a
+`ResourceModifiedError`, `AuthenticationError` a `ClientAuthenticationError`, and `HttpResponseError` an
+`azure.core.exceptions.HttpResponseError`. The Microsoft groups of `FinOpsClient` raise the plain azure-core errors, so
+`except` the azure-core class to catch both, and keep working unchanged after the move to the Microsoft client. HTTP
+failures carry the status, the service's error code, the response headers and the request:
 
 ```python
+from azure.core.exceptions import ResourceNotFoundError
+from azure.identity import DefaultAzureCredential
+
 from foundry_finops import (
     AuthenticationError, BudgetExceededError, ConflictError, FinOpsClient, FinOpsError, ForbiddenError,
     HttpResponseError, NotFoundError, ThrottledError,
 )
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     try:
-        fo.cost_controls.get("contoso-foundry", "missing")
-    except NotFoundError:
+        fo.account_cost_controls.get("rg-ai", "contoso-foundry", "missing")
+    except ResourceNotFoundError:               # the Microsoft class: also catches this package's NotFoundError
         print("no such cost control")
     except ForbiddenError as e:                 # 403: you lack a role
         print("missing a role:", e.message)
     except AuthenticationError:                 # 401, or no usable credential
         print("sign in again")
-    except ConflictError:                       # 409 / 412: someone changed it, or it already exists
+    except ConflictError:                       # 409: it already exists, or someone changed it
         print("changed concurrently")
     except ThrottledError as e:                 # 429 after the retries ran out
         print("retry after", e.retry_after)
@@ -1275,6 +1394,7 @@ foundry-finops download --list --roles auto                                     
 The same thing from Python:
 
 ```python
+from azure.identity import DefaultAzureCredential
 from datetime import date
 from pathlib import Path
 
@@ -1283,7 +1403,7 @@ from foundry_finops.export import QUERIES, ExportContext, run_export
 from foundry_finops.roles import discover
 from foundry_finops.service import LiveService, Settings
 
-with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai") as fo:
     svc = LiveService(Settings(subscription_id="<subscription-id>", resource_group="rg-ai", foundry_account="contoso-foundry"), fo)
     ctx = ExportContext(client=fo, service=svc, account="contoso-foundry", project="fraud-risk",
                         start=date(2026, 1, 1), end=date(2026, 3, 31))
@@ -1295,7 +1415,7 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
 
     # Limit to what the signed-in identity's roles allow
     scopes = {"subscription": "/subscriptions/<subscription-id>", "resource_group": fo.cost.resource_group_scope(),
-              "account": fo.foundry.account_id("contoso-foundry"), "apim": fo.cost.resource_group_scope(),
+              "account": fo.account_id("contoso-foundry"), "apim": fo.cost.resource_group_scope(),
               "anywhere": "/subscriptions/<subscription-id>"}
     run_export(ctx, Path("."), access=discover(fo, scopes))
 ```
@@ -1402,12 +1522,12 @@ Exit codes: `0` success, `1` a service or sign-in error (or any failed query in 
 | Budgets | `fo.cost.list_budgets()` | `budgets` | `budgets` |
 | Budget thresholds reached | `budget.notification_status()` | `budgets` | `budget_status` |
 | Cost exports | `fo.cost.list_exports()` | | `cost_exports` |
-| Cost controls | `fo.cost_controls.list_all(account)` | `cost-controls` | `cost_controls` |
-| Foundry account | `fo.foundry.get_account(account)` | | `foundry_account` |
-| Projects | `fo.foundry.list_projects(account)` | | `foundry_projects` |
-| Deployments | `fo.foundry.list_deployments(account)` | | `foundry_deployments` |
-| Connections | `fo.foundry.list_connections(account)` | | `foundry_connections` |
-| Event Grid topics | `fo.foundry.list_event_grid_topics()` | | `foundry_event_grid_topics` |
+| Cost controls | `fo.account_cost_controls.list(rg, account)`, `cost_controls.list_specs(fo, rg, account)` | `cost-controls` | `cost_controls` |
+| Foundry account | `fo.accounts.get(rg, account)` | | `foundry_account` |
+| Projects | `fo.projects.list(rg, account)` | | `foundry_projects` |
+| Deployments | `fo.deployments.list(rg, account)` | | `foundry_deployments` |
+| Connections | `fo.account_connections.list(rg, account)` | | `foundry_connections` |
+| Event Grid topics | `fo.event_grid.list_topics()` | | `foundry_event_grid_topics` |
 | Tokens by deployment | `fo.metrics.query(account_id, ...)` | `tokens` | `token_usage_by_deployment` |
 | Estimated cost (preview metric) | `fo.metrics.estimated_cost_totals(account_id)` | `estimated-cost` | `estimated_cost_by_project`, `estimated_cost_by_deployment` |
 | PTU headroom | `ptu_headroom(fo, account)` | `ptu` | `ptu_headroom` |
@@ -1416,8 +1536,8 @@ Exit codes: `0` success, `1` a service or sign-in error (or any failed query in 
 | Tokens by model | `fo.metrics.query(account_id, ..., split_by=[FoundryMetrics.MODEL_DIMENSION])` | | `token_usage_by_model` |
 | Metric definitions | `fo.metrics.definitions(account_id)` | | `metric_definitions` |
 | KQL | `fo.logs.query(target, kql)` | `kql` | `kql_*` (five saved queries) |
-| Quota usage | `fo.quota.usages(location)` | `quota` | `quota_usage` |
-| Quota models | `fo.quota.models(location)` | | `quota_models` |
+| Quota usage | `fo.usages.list(location)` | `quota` | `quota_usage` |
+| Quota models | `fo.models.list(location)` | | `quota_models` |
 | Tags | `fo.tags.get(scope)`, `fo.tags.list_tagged(type)` | | `tags` |
 | Alerts | `fo.alerts.list_metric_alerts()` and related | | `alerts` |
 | API Management | `fo.apim.token_limit_inventory(service)` | | `apim_gateway` |

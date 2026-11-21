@@ -56,7 +56,7 @@ def azure(assignments: list[tuple[tuple[str, dict], str]], token: str | None = N
         s.add("GET", rid.rsplit("/", 1)[-1], 200, definition)
     s.add("GET", "/providers/Microsoft.Authorization/roleAssignments", 200,
           {"value": [assignment(rid, scope) for (rid, _), scope in assignments]})
-    client = FinOpsClient("sub-1", StaticTokenCredential(token or jwt(oid="user-oid")), resource_group="rg",
+    client = FinOpsClient(StaticTokenCredential(token or jwt(oid="user-oid")), "sub-1", resource_group="rg",
                           session=s, retry=RetryPolicy(total=0))
     return client, s
 

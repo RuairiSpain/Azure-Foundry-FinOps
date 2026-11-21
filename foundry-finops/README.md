@@ -6,12 +6,15 @@ Application Insights KQL, model quota and deployment capacity, ARM tags, alert r
 AI-gateway token policies. It also includes client-side usage tracking with OpenTelemetry for per-team cost
 attribution.
 
-> Foundry's own Python SDK (`azure-ai-projects`) has no cost or budget API, and the Azure management libraries
-> don't cover cost controls yet (API version `2026-11-15-preview`). This package calls the REST APIs directly with
-> typed models, retries and paging.
+> **`FinOpsClient` is the Microsoft client.** It extends `azure.mgmt.cognitiveservices.CognitiveServicesManagementClient`
+> (15.1.0b1 and later, which added the Foundry cost controls, API version `2026-11-15-preview`), so cost control code
+> uses the Microsoft groups, arguments and models and moves to the plain Microsoft client by changing the constructor.
+> What the Microsoft packages don't cover (cost queries, token metrics, KQL, alerts, API Management policies, pricing,
+> offline validation and the portal's cost control views) is added around it. See
+> [MIGRATION.md](https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/MIGRATION.md).
 
 ```bash
-pip install foundry-finops                 # core (requests + azure-identity)
+pip install foundry-finops                 # core (the Microsoft client + azure-identity)
 pip install "foundry-finops[pandas]"       # Table.to_pandas()
 pip install "foundry-finops[tracing]"      # OpenTelemetry / Application Insights helpers
 ```
@@ -21,6 +24,11 @@ pip install "foundry-finops[tracing]"      # OpenTelemetry / Application Insight
 * **[Usage guide](https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/USAGE.md)**:
   install, import, and every query type with the SDK call and the command line side by side (cost, budgets, exports,
   Foundry resources, cost controls, token metrics, KQL, quota, tags, alerts, API Management, prices, tracing, errors).
+* **[Migration guide](https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/MIGRATION.md)**:
+  from this package to the Microsoft SDKs, call by call (`foundry-finops migration-map` prints the table), and what
+  changed from 0.1.
+* **[Design](https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/DESIGN.md)**: what the
+  Microsoft SDKs look like today, and the decisions that follow from it.
 * **[API coverage review](https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/API_COVERAGE.md)**:
   which Azure cost and usage APIs (including preview ones) the SDK covers, what is missing, and what to add next.
 * **[Download setup guide](https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/SETUP.md)**:
@@ -29,25 +37,30 @@ pip install "foundry-finops[tracing]"      # OpenTelemetry / Application Insight
 ## Quick start
 
 ```python
-from foundry_finops import (FinOpsClient, CostControl, BudgetCategory, BudgetSharing, Threshold,
-                            TimeGrain, CostQuery, Budget, BudgetNotification, LlmTokenLimit)
+from azure.identity import DefaultAzureCredential
 
-fo = FinOpsClient("<subscription-id>", resource_group="rg-ai")       # DefaultAzureCredential
-acct = "contoso-foundry"
+from foundry_finops import (FinOpsClient, CostControl, BudgetCategory, BudgetSharing, Threshold,
+                            TimeGrain, CostQuery, Budget, BudgetNotification, LlmTokenLimit, cost_controls)
+
+# FinOpsClient is the Microsoft client (azure-mgmt-cognitiveservices) plus the FinOps groups
+fo = FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai")
+rg, acct = "rg-ai", "contoso-foundry"
 
 # 1. Real-time guardrail: $500/month per agent in one project, alert 80 %, block 100 %
-conn = fo.cost_controls.find_event_grid_connection_id(acct)        # reuse Foundry's Event Grid connection
-fo.cost_controls.create_or_update(acct, CostControl(
+conn = cost_controls.find_event_grid_connection_id(fo, rg, acct)    # reuse Foundry's Event Grid connection
+spec = CostControl(
     name="fraud-risk-monthly", category=BudgetCategory.COST, amount=500, time_grain=TimeGrain.MONTHLY,
     start_date="2026-12-01", end_date="2027-07-01", filters={"project": ["fraud-risk"]},
-    sharing=BudgetSharing.PER_AGENT, alert=Threshold(80, event_grid_connection_id=conn), block=Threshold(100)))
+    sharing=BudgetSharing.PER_AGENT, alert=Threshold(80, event_grid_connection_id=conn), block=Threshold(100))
+fo.project_cost_controls.create_or_update(rg, acct, "fraud-risk", spec.name,   # the Microsoft call and model
+                                          spec.to_resource(project="fraud-risk"))
 
 # 2. Billed cost by Foundry's automatic billing tags (project / deployment / agent.name)
-by_project = fo.cost.cost_by("project", scope=fo.foundry.account_id(acct), days=30)
+by_project = fo.cost.cost_by("project", scope=fo.account_id(acct), days=30)
 print(by_project.to_pandas().groupby("TagValue")["Cost"].sum())
 
 # 3. Near-real-time tokens per deployment
-tokens = fo.metrics.query_table(fo.foundry.account_id(acct), hours=24)
+tokens = fo.metrics.query_table(fo.account_id(acct), hours=24)
 
 # 4. Cost Management budget (alerts on the bill, can't block)
 fo.cost.create_or_update_budget(Budget(name="ai-platform", amount=25_000,
@@ -63,13 +76,14 @@ fo.apim.set_token_limit("contoso-ai-gateway", LlmTokenLimit(tokens_per_minute=60
 
 | Attribute | REST surface | Highlights |
 |---|---|---|
-| `fo.foundry` | `Microsoft.CognitiveServices` accounts, projects, deployments, connections | `set_capacity()` (TPM), Event Grid topics |
-| `fo.cost_controls` | `accounts[/projects]/costControls` (preview) | CRUD, `PATCH`, `If-None-Match`, `list_all()`, `exists()`, `remove_alert()`, `project_budget()`, usage connection |
+| `fo.account_cost_controls`, `fo.project_cost_controls` | `accounts[/projects]/costControls` (preview) | **Microsoft groups**: `list`, `get`, `create_or_update`, `update`, `delete`, `check_existence` |
+| `fo.accounts`, `fo.projects`, `fo.deployments`, `fo.account_connections`, `fo.usages`, `fo.models` | `Microsoft.CognitiveServices` | **Microsoft groups**, inherited from `azure-mgmt-cognitiveservices` |
+| `foundry_finops.cost_controls`, `foundry_finops.resources` | helpers over the groups above | `CostControl` spec, `list_all()`, `exists()`, `remove_alert()`, `get_project_budget()`, usage connection, `set_deployment_capacity()` |
 | `fo.policy` | `Microsoft.PolicyInsights` policy states | `violations_by_resource()`, `states()` |
 | `fo.cost` | `Microsoft.CostManagement` query, forecast, budgets, exports, tag inheritance | `CostQuery` builder, paging, `cost_by()` |
 | `fo.metrics` | `Microsoft.Insights/metrics` | `FoundryMetrics` names, split by deployment/model |
 | `fo.logs` | Log Analytics query API (workspace or App Insights resource) | returns `Table` |
-| `fo.quota` | `locations/{region}/usages`, `models` | `QuotaUsage.percent_used` |
+| `fo.event_grid` | `Microsoft.EventGrid` topics | `list_topics()` |
 | `fo.tags` | `Microsoft.Resources/tags/default` | `merge()`, `replace()`, `remove()`, inventory |
 | `fo.alerts` | metric alerts, scheduled query rules, action groups | typed `MetricAlert`, `LogAlert`, `ActionGroup` |
 | `fo.apim` | `Microsoft.ApiManagement` products, subscriptions, policies | `LlmTokenLimit`, `LlmEmitTokenMetric`, policy upsert, inventory |

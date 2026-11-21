@@ -78,7 +78,7 @@ Points from the spec that the SDK now enforces or that you should know:
 | **Quota tiers** | `quotaTiers` | none | Subscription quota tier, upgrade eligibility, tier upgrade policy |
 | SKUs | account and deployment `skus` | none | Available SKUs for an account or deployment |
 | Managed compute capacities and usages (preview) | `managedComputeCapacities`, `managedComputeUsages` | none | Accelerator capacity per type |
-| Region and account usages, models | `usages`, `models` | `fo.quota.usages`, `models`, `account_usages` | none |
+| Region and account usages, models | `usages`, `models` | `fo.usages.list`, `fo.models.list`, `fo.accounts.list_usages` (Microsoft groups) | none |
 
 ### 3.3 Azure Monitor metrics for Foundry (the SDK knows 9 of about 120 metric names)
 

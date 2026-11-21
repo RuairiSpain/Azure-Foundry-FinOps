@@ -2,17 +2,18 @@
 
 Quick start::
 
+    from azure.identity import DefaultAzureCredential
     from foundry_finops import FinOpsClient
-    fo = FinOpsClient("<subscription-id>", resource_group="rg-ai")
-    fo.cost_controls.list("contoso-foundry")
+    client = FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group="rg-ai")
+    list(client.account_cost_controls.list("rg-ai", "contoso-foundry"))
 """
 
 from ._auth import StaticTokenCredential, TokenCredential, default_credential
+from ._client import FinOpsClient
 from ._config import CHINA_CLOUD, PUBLIC_CLOUD, US_GOV_CLOUD, ApiVersions, AzureCloud
 from ._ids import ResourceId, apim_service_id, foundry_account_id, foundry_project_id
 from ._transport import RetryPolicy
 from ._version import __version__
-from .client import FinOpsClient
 from .errors import (
     AuthenticationError,
     BudgetExceededError,
@@ -22,6 +23,7 @@ from .errors import (
     ForbiddenError,
     HttpResponseError,
     NotFoundError,
+    PreconditionFailedError,
     ServiceError,
     ThrottledError,
     is_budget_exceeded,
@@ -41,12 +43,12 @@ from .models import (
     CostControlState,
     CostControlStatus,
     CostQuery,
-    Deployment,
+    DeploymentView,
     Granularity,
     LogAlert,
     MetricAlert,
     ProjectBudget,
-    QuotaUsage,
+    QuotaView,
     Table,
     Threshold,
     ThresholdType,
@@ -82,7 +84,7 @@ __all__ = [
     "CostControlState",
     "CostControlStatus",
     "CostQuery",
-    "Deployment",
+    "DeploymentView",
     "FinOpsClient",
     "FinOpsError",
     "ForbiddenError",
@@ -95,9 +97,10 @@ __all__ = [
     "MetricAlert",
     "ModelPrice",
     "NotFoundError",
+    "PreconditionFailedError",
     "PriceSheet",
     "ProjectBudget",
-    "QuotaUsage",
+    "QuotaView",
     "ResourceId",
     "RetryPolicy",
     "ServiceError",

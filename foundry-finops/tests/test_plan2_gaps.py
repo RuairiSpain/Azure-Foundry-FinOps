@@ -13,8 +13,10 @@ from foundry_finops import (
     CostControlAlertEvent,
     CostControlState,
     Threshold,
+    cost_controls,
     evaluate_cost_control,
     project_budget,
+    resources,
 )
 from foundry_finops.errors import NotFoundError
 from foundry_finops.export import NAMES
@@ -141,15 +143,15 @@ class CostControlOperationTests(unittest.TestCase):
 
     def test_exists_uses_head(self):
         self.s.add("HEAD", self.URL, 200, None)
-        self.assertTrue(self.fo.cost_controls.exists("acct", "cap"))
+        self.assertTrue(cost_controls.exists(self.fo, "rg", "acct", "cap"))
         self.assertEqual(self.s.calls[-1]["method"], "HEAD")
         s2 = FakeSession()
-        self.assertFalse(make_client(s2).cost_controls.exists("acct", "cap"))  # no route: 404
+        self.assertFalse(cost_controls.exists(make_client(s2), "rg", "acct", "cap"))  # 404 is False, not an error
 
     def test_remove_alert_sends_a_null_notification_and_nothing_else(self):
         self.s.add("GET", self.URL, 200, self.body)
         self.s.add("PATCH", self.URL, 200, self.body)
-        self.fo.cost_controls.remove_alert("acct", "cap", if_match='"e1"')
+        cost_controls.remove_alert(self.fo, "rg", "acct", "cap", etag='"e1"')
         call = self.s.calls[-1]
         self.assertEqual(call["json"], {"properties": {"notifications": {"Actual_GreaterThanOrEqualTo_80_Percent": None}}})
         self.assertEqual(call["headers"]["If-Match"], '"e1"')
@@ -157,32 +159,32 @@ class CostControlOperationTests(unittest.TestCase):
     def test_remove_block_sends_a_null_action(self):
         self.s.add("GET", self.URL, 200, self.body)
         self.s.add("PATCH", self.URL, 200, self.body)
-        self.fo.cost_controls.remove_block("acct", "cap")
+        cost_controls.remove_block(self.fo, "rg", "acct", "cap")
         self.assertEqual(self.s.calls[-1]["json"], {"properties": {"providerProperties": {
             "actions": {"Block_GreaterThanOrEqualTo_100_Percent": None}}}})
 
     def test_remove_without_one_is_a_no_op(self):
         body = {"name": "cap", "properties": {"category": "Cost", "amount": 5, "timeGrain": "Daily"}}
         self.s.add("GET", self.URL, 200, body)
-        self.fo.cost_controls.remove_alert("acct", "cap")
+        cost_controls.remove_alert(self.fo, "rg", "acct", "cap")
         self.assertEqual([c["method"] for c in self.s.calls], ["GET"])
 
     def test_usage_connection_read_set_and_clear(self):
         acct = {"name": "acct", "properties": {"costControlConnections": {"appInsightsConnectionId": CONN}}}
         self.s.add("GET", "/accounts/acct", 200, acct)
-        self.assertEqual(self.fo.cost_controls.get_usage_connection("acct"), CONN)
-        self.assertEqual(self.fo.foundry.get_account("acct").app_insights_connection_id, CONN)
+        self.assertEqual(cost_controls.get_usage_connection(self.fo, "rg", "acct"), CONN)
+        self.assertEqual(resources.get_account(self.fo, "rg", "acct").app_insights_connection_id, CONN)
         self.s.add("PATCH", "/accounts/acct", 200, acct)
-        self.fo.cost_controls.set_usage_connection("acct", CONN)
+        cost_controls.set_usage_connection(self.fo, "rg", "acct", CONN)
         self.assertEqual(self.s.calls[-1]["json"], {"properties": {"costControlConnections": {"appInsightsConnectionId": CONN}}})
-        self.fo.cost_controls.set_usage_connection("acct", None)
+        cost_controls.set_usage_connection(self.fo, "rg", "acct", None)
         self.assertEqual(self.s.calls[-1]["json"], {"properties": {"costControlConnections": None}})
 
     def test_delete_project_cost_controls_deletes_only_the_projects_own(self):
         item = {"name": "p-cap", "properties": {"category": "Cost", "amount": 5, "timeGrain": "Daily"}}
         self.s.add("GET", "/projects/p1/costControls", 200, {"value": [item]})
         self.s.add("DELETE", "/projects/p1/costControls/p-cap", 200, None)
-        self.assertEqual(self.fo.cost_controls.delete_project_cost_controls("acct", "p1"), ["p-cap"])
+        self.assertEqual(cost_controls.delete_project_cost_controls(self.fo, "rg", "acct", "p1"), ["p-cap"])
         self.assertEqual([c["method"] for c in self.s.calls], ["GET", "DELETE"])
 
 
@@ -212,9 +214,9 @@ class ProjectBudgetTests(unittest.TestCase):
             mk("p2only", filter={"additionalInfo": {"name": "project", "operator": "In", "values": ["p2"]}})]})
         s.add("GET", "/accounts/acct/projects", 200, {"value": [{"name": "acct/p1"}]})
         s.add("GET", "/projects/p1/costControls", 200, {"value": [{**mk("mine", amount=3), "id": "/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/acct/projects/p1/costControls/mine"}]})
-        names = [c.name for c in fo.cost_controls.applicable("acct", "p1")]
+        names = [c.name for c in cost_controls.applicable(fo, "rg", "acct", "p1")]
         self.assertEqual(sorted(names), ["mine", "p1only", "wide"])
-        self.assertEqual(fo.cost_controls.project_budget("acct", "p1").budget.name, "mine")
+        self.assertEqual(cost_controls.get_project_budget(fo, "rg", "acct", "p1").budget.name, "mine")
 
 
 class PolicyTests(unittest.TestCase):

@@ -27,13 +27,29 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "requests>=2.31",
+  # The Microsoft client this package extends. Foundry cost controls are in 15.1.0b1 and later (preview).
+  "azure-mgmt-cognitiveservices>=15.1.0b1,<16",
+  "azure-core>=1.37",
+  "azure-mgmt-core>=1.6",
   "azure-identity>=1.17",
+  "requests>=2.31",
   "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
+# The Microsoft clients named in `foundry-finops migration-map`; tests check that every call listed there exists.
+conformance = [
+  "azure-mgmt-costmanagement>=5.0",
+  "azure-mgmt-consumption>=11.0",
+  "azure-mgmt-monitor>=7.0",
+  "azure-monitor-query>=2.0",
+  "azure-mgmt-resource>=26.0",
+  "azure-mgmt-apimanagement>=5.0",
+  "azure-mgmt-authorization>=4.0",
+  "azure-mgmt-policyinsights>=1.0",
+  "azure-mgmt-eventgrid>=10.4",
+]
 tracing = [
   "azure-ai-projects>=2.0.0",
   "azure-monitor-opentelemetry>=1.6",

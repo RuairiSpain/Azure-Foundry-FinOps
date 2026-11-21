@@ -1,24 +1,18 @@
 """Authentication helpers.
 
-The SDK accepts any object that implements the ``azure.core.credentials.TokenCredential``
-protocol (``get_token(*scopes) -> AccessToken``), so every ``azure-identity`` credential works.
+The SDK takes an ``azure.core.credentials.TokenCredential`` (``get_token(*scopes) -> AccessToken``), the same
+type every Microsoft Azure SDK client takes, so every ``azure-identity`` credential works.
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from typing import Any, NamedTuple, Protocol, runtime_checkable
+from typing import Any
 
+from azure.core.credentials import AccessToken, TokenCredential
 
-class AccessToken(NamedTuple):
-    token: str
-    expires_on: int
-
-
-@runtime_checkable
-class TokenCredential(Protocol):
-    def get_token(self, *scopes: str, **kwargs: Any) -> Any: ...
+__all__ = ["AccessToken", "StaticTokenCredential", "TokenCredential", "default_credential"]
 
 
 class StaticTokenCredential:

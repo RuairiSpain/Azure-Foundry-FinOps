@@ -18,6 +18,7 @@ from foundry_finops import (
     Threshold,
     ThrottledError,
     TimeGrain,
+    cost_controls,
     is_budget_exceeded,
 )
 from foundry_finops.operations.apim import find_token_limits, upsert_policy_fragment
@@ -87,6 +88,8 @@ class CostControlModelTests(unittest.TestCase):
 
 
 class CostControlOperationTests(unittest.TestCase):
+    """The official operation groups (inherited from the Microsoft client) and the helpers around them."""
+
     def setUp(self):
         self.s = FakeSession()
         self.fo = make_client(self.s)
@@ -94,67 +97,73 @@ class CostControlOperationTests(unittest.TestCase):
     def test_create_project_cost_control_url_and_headers(self):
         self.s.add("PUT", "/costControls/", 201, {"name": "cap", "properties": {"category": "Cost", "amount": 5,
                                                                                   "timeGrain": "Daily"}})
-        out = self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z"), project="p1",
-                                                     only_if_new=True)
+        spec = CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z")
+        out = cost_controls.upsert(self.fo, "rg", "acct", spec, project="p1", only_if_new=True)
         call = self.s.calls[-1]
         self.assertIn("/accounts/acct/projects/p1/costControls/cap", call["url"])
-        self.assertEqual(call["params"]["api-version"], "2026-11-15-preview")
+        self.assertIn("api-version=2026-11-15-preview", call["url"])
         self.assertEqual(call["headers"]["If-None-Match"], "*")
         self.assertTrue(call["headers"]["Authorization"].startswith("Bearer "))
         self.assertEqual(out.time_grain, TimeGrain.DAILY)
 
     def test_list_pages(self):
-        self.s.add("GET", "page2", 200, {"value": [{"name": "b", "properties": {"amount": 2}}]})
+        self.s.add("GET", "skiptoken=page2", 200, {"value": [{"name": "b", "properties": {"amount": 2}}]})
         self.s.add("GET", "/costControls", 200, {"value": [{"name": "a", "properties": {"amount": 1}}],
-                                                 "nextLink": "https://management.azure.com/x?page2"})
-        names = [c.name for c in self.fo.cost_controls.list("acct")]
+                                                 "nextLink": "https://management.azure.com/x?$skiptoken=page2"})
+        names = [c.name for c in self.fo.account_cost_controls.list("rg", "acct")]
         self.assertEqual(names, ["a", "b"])
-
-    def test_patch_refuses_category_change(self):
-        with self.assertRaises(ValueError):
-            self.fo.cost_controls.update("acct", "x", category="Tokens")
 
     def test_find_connection(self):
         self.s.add("GET", "/projects", 200, {"value": []})
         self.s.add("GET", "/costControls", 200, {"value": [{"name": "a", "properties": {
             "amount": 1, "notifications": {"n": {"threshold": 80, "eventGridConnectionId": CONN}}}}]})
-        self.assertEqual(self.fo.cost_controls.find_event_grid_connection_id("acct"), CONN)
+        self.assertEqual(cost_controls.find_event_grid_connection_id(self.fo, "rg", "acct"), CONN)
 
 
 class TransportTests(unittest.TestCase):
+    """The FinOps groups use this package's transport: retries, ``Retry-After`` and cost-control blocks."""
+
+    TOPICS = "/providers/Microsoft.EventGrid/topics"
+
     def setUp(self):
         self.s = FakeSession()
         self.fo = make_client(self.s)
 
     def test_retries_on_429_then_succeeds(self):
-        self.s.add("GET", "/deployments/d1", 200, {"name": "d1", "sku": {"name": "GlobalStandard", "capacity": 5},
-                                                   "properties": {"model": {"name": "gpt"}}})
-        self.s.add("GET", "/deployments/d1", 429, {"error": {"code": "Throttled", "message": "slow"}},
+        self.s.add("GET", self.TOPICS, 200, {"value": [{"name": "t1"}]})
+        self.s.add("GET", self.TOPICS, 429, {"error": {"code": "Throttled", "message": "slow"}},
                    {"Retry-After": "0"}, times=1)
-        d = self.fo.foundry.get_deployment("acct", "d1")
-        self.assertEqual(d.capacity, 5)
-        self.assertEqual(d.tokens_per_minute, 5000)
+        self.assertEqual([t["name"] for t in self.fo.event_grid.list_topics()], ["t1"])
         self.assertEqual(len(self.s.calls), 2)
 
     def test_budget_block_is_not_retried(self):
-        self.s.add("GET", "/deployments/d1", 429, {"error": {"message": "Budget exceeded for cost control."}},
+        self.s.add("GET", self.TOPICS, 429, {"error": {"message": "Budget exceeded for cost control."}},
                    {"x-ms-budget-cause": "budget_exceeded", "x-ms-budget-window-reset": "2026-12-01T00:00:00Z",
                     "x-ms-applied-cost-control-id": "cc1"})
         with self.assertRaises(BudgetExceededError) as ctx:
-            self.fo.foundry.get_deployment("acct", "d1")
+            list(self.fo.event_grid.list_topics())
         self.assertEqual(len(self.s.calls), 1)
         self.assertEqual(ctx.exception.reset_at, "2026-12-01T00:00:00Z")
         self.assertEqual(ctx.exception.cost_control_id, "cc1")
 
     def test_throttle_exhausts(self):
-        self.s.add("GET", "/deployments/d1", 429, {"error": {"message": "slow"}})
+        self.s.add("GET", self.TOPICS, 429, {"error": {"message": "slow"}})
         with self.assertRaises(ThrottledError):
-            self.fo.foundry.get_deployment("acct", "d1")
+            list(self.fo.event_grid.list_topics())
         self.assertEqual(len(self.s.calls), 3)
 
     def test_not_found(self):
         with self.assertRaises(NotFoundError):
-            self.fo.foundry.get_deployment("acct", "nope")
+            list(self.fo.event_grid.list_topics())
+
+    def test_errors_are_azure_core_errors(self):
+        from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
+
+        with self.assertRaises(ResourceNotFoundError):
+            list(self.fo.event_grid.list_topics())  # this package's error is an azure-core ResourceNotFoundError
+        with self.assertRaises(ResourceNotFoundError):
+            self.fo.account_cost_controls.get("rg", "acct", "nope")  # and so is the Microsoft client's
+        self.assertTrue(issubclass(ThrottledError, HttpResponseError))
 
     def test_is_budget_exceeded_helper(self):
         self.assertTrue(is_budget_exceeded({"X-MS-Budget-Cause": "budget_exceeded"}))
