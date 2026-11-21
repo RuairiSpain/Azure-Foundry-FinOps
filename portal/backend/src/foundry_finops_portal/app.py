@@ -239,6 +239,11 @@ def create_app(
                           "account": settings.foundry_account}}
 
     # -------------------------------------------------------------- views
+    @app.get("/api/projects")
+    def projects(c: Ctx = Depends(ctx)) -> list[dict[str, Any]]:
+        visible = c.views.visible_projects()
+        return [p for p in c.backend.list_projects() if visible is None or p["name"] in visible]
+
     @app.get("/api/fleet")
     def fleet(days: int = Query(30, ge=1, le=90), c: Ctx = Depends(ctx)) -> dict[str, Any]:
         return c.views.fleet(days)

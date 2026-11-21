@@ -1,3 +1,5 @@
+> **Superseded.** The full portal (sign-in with Entra, per-user scoping, cost centres, notifications, Bicep deployment) is in [`/portal`](../../../portal). This stdlib example stays as a minimal reference.
+
 # Foundry FinOps dashboard (example)
 
 A zero-dependency web app (Python standard library server + vanilla JS + Chart.js) on top of

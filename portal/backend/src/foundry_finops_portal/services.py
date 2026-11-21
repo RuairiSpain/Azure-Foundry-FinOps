@@ -60,6 +60,11 @@ def _trend(current: float, previous: float) -> float | None:
     return round((current - previous) / previous * 100, 1) if previous > 0 else None
 
 
+def _covers_project(control: dict[str, Any], project: str) -> bool:
+    """A project's own cost control, or a resource-level one whose project filter names it."""
+    return control.get("project") == project or project in ((control.get("filters") or {}).get("project") or [])
+
+
 def _sum_by(records: list[dict[str, Any]], key: str) -> dict[str, float]:
     out: dict[str, float] = defaultdict(float)
     for r in records:
@@ -127,8 +132,8 @@ class Views:
                 "cost": round(cur.get(n, 0.0), 2), "previous_cost": round(prev.get(n, 0.0), 2),
                 "trend_pct": _trend(cur.get(n, 0.0), prev.get(n, 0.0)), "new": prev.get(n, 0.0) == 0 and cur.get(n, 0.0) > 0,
                 "agents": len(agents.get(n, ())),
-                "cost_controls": sum(1 for c in controls if c.get("project") == n),
-                "attention": sum(1 for c in attention if c.get("project") == n),
+                "cost_controls": sum(1 for c in controls if _covers_project(c, n)),
+                "attention": sum(1 for c in attention if _covers_project(c, n)),
             })
         rows.sort(key=lambda r: -r["cost"])
         increases = sorted((r for r in rows if r["cost"] - r["previous_cost"] > 0),

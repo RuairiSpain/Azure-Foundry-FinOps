@@ -1,0 +1,293 @@
+/** Shapes of the portal API's responses (see portal/backend). Fields the portal can't know are `null`, never invented. */
+
+export interface PortalConfig {
+  mode: "demo" | "entra";
+  brand: string;
+  read_only: boolean;
+  demo_users?: { oid: string; name: string; upn: string }[];
+  msal?: { client_id: string; tenant_id: string; authority: string; scope: string };
+}
+
+export type Role = "admin" | "owner" | "viewer";
+export type ScopeType = "all" | "subscription" | "resource_group" | "account" | "project" | "cost_centre";
+
+export interface Grant {
+  id?: number;
+  scope_type: ScopeType;
+  scope_value: string;
+  can_write: boolean;
+}
+
+export interface Me {
+  oid: string;
+  upn: string;
+  name: string;
+  role: Role;
+  grants: Grant[];
+  account_level: boolean;
+  visible_projects: string[] | null;
+  mode: "demo" | "entra";
+  read_only: boolean;
+  azure: { subscription: string; resource_group: string; account: string };
+}
+
+export interface SeriesItem {
+  name: string;
+  values: number[];
+  total: number;
+}
+export interface Series {
+  labels: string[];
+  series: SeriesItem[];
+  total: number;
+}
+
+export interface FleetProject {
+  name: string;
+  display_name: string;
+  team: string;
+  cost: number;
+  previous_cost: number;
+  trend_pct: number | null;
+  new: boolean;
+  agents: number;
+  cost_controls: number;
+  attention: number;
+}
+export interface PolicyViolation {
+  resource_id: string;
+  violations: number;
+  policies: string[];
+}
+export interface Fleet {
+  days: number;
+  kpis: {
+    projects: number;
+    agents: number;
+    deployments: number | null;
+    cost: number;
+    previous_cost: number;
+    trend_pct: number | null;
+    cost_controls_attention: number;
+    policy_violations: number | null;
+  };
+  projects: FleetProject[];
+  top_cost_increases: { name: string; increase: number; trend_pct: number | null }[];
+  attention: { name: string; project: string | null; state: string; percent_used: number | null }[];
+  policy: PolicyViolation[] | null;
+  policy_note: string | null;
+  currency: string;
+  notes: string[];
+}
+
+export interface QuotaRow {
+  name: string;
+  display_name: string;
+  current_value: number;
+  limit: number;
+  available: number;
+  percent_used: number;
+  unit: string;
+}
+export interface Operations {
+  hours: number;
+  labels: string[];
+  series: SeriesItem[];
+  kpis: { tokens: number; requests: number; deployments: number };
+  deployments: {
+    deployment: string;
+    model: string | null;
+    tokens: number;
+    requests: number;
+    tokens_per_request: number | null;
+    tokens_per_minute_limit: number | null;
+  }[];
+  quota: QuotaRow[];
+  notes: string[];
+}
+
+export interface Trend {
+  value: number;
+  previous: number;
+  trend_pct: number | null;
+}
+export interface CostOverview {
+  days: number;
+  currency: string;
+  estimated_cost: Trend;
+  forecast: { value: number | null; note: string | null };
+  spend_breakdown: { agent_cost: number; direct_model_cost: number };
+  cost_controls: { total: number; attention: number };
+  highest_spend: { name: string; cost: number }[];
+  series: Series;
+  notes: string[];
+}
+export interface CostRow {
+  name: string;
+  cost: number;
+  share_pct: number | null;
+  previous_cost: number | null;
+  trend_pct: number | null;
+  new: boolean;
+}
+export interface CostTable {
+  group_by: string;
+  days: number;
+  rows: CostRow[];
+  total: number;
+  currency: string;
+}
+
+export interface Threshold {
+  threshold: number;
+  threshold_type?: string;
+  event_grid_connection_id?: string | null;
+}
+export interface CostControl {
+  name: string;
+  project?: string | null;
+  category: "Cost" | "Tokens";
+  amount: number;
+  time_grain: string;
+  start_date: string | null;
+  end_date: string | null;
+  filters: Record<string, string[]>;
+  sharing: string;
+  alert?: Threshold | null;
+  block?: Threshold | null;
+  usage?: number | null;
+  usage_note?: string | null;
+  state: string;
+  over_budget?: boolean;
+  percent_used?: number | null;
+  can_write?: boolean;
+}
+export interface CostControls {
+  cost_controls: CostControl[];
+  project_budget: { name: string | null; amount: number | null; count: number; per_agent_or_session: number } | null;
+  note: string;
+}
+export interface ProjectMonitor {
+  project: string;
+  days: number;
+  currency: string;
+  latest_billed_cost: Trend;
+  agents: { agent: string; cost: number }[];
+  series: Series;
+  controls: CostControls;
+  notes: string[];
+}
+
+export interface Budget {
+  name: string;
+  amount: number;
+  time_grain: string;
+  start_date: string | null;
+  end_date: string | null;
+  current_spend: number | null;
+  forecast_spend: number | null;
+  currency: string | null;
+  percent_used: number | null;
+  notifications: { threshold: number; threshold_type: string; contact_emails: string[] }[];
+}
+export interface TagRow {
+  scope: string;
+  name: string;
+  type: string;
+  tags: Record<string, string>;
+}
+
+export interface Rule {
+  id: number;
+  cost_centre_id: number;
+  match_type: "project" | "agent" | "deployment" | "tag";
+  match_key: string;
+  match_value: string;
+  share_percent: number;
+}
+export interface CostCentre {
+  id: number;
+  code: string;
+  name: string;
+  owner_oid: string;
+  description: string;
+  monthly_budget: number | null;
+  rules: Rule[];
+}
+export interface CentreReport {
+  basis: string;
+  days: number;
+  currency: string;
+  total: number;
+  note: string;
+  centres: {
+    id: number;
+    code: string;
+    name: string;
+    cost: number;
+    monthly_budget: number | null;
+    percent_of_budget: number | null;
+    values: { value: string; share_pct: number; cost: number }[];
+  }[];
+  unallocated: { value: string; cost: number; unallocated_pct: number }[];
+}
+
+export interface NotificationRule {
+  id: number;
+  name: string;
+  scope_type: ScopeType;
+  scope_value: string;
+  trigger: "percent_used" | "state" | "event";
+  threshold: number | null;
+  channel: "webhook" | "email" | "log";
+  target: string;
+  enabled: boolean;
+  last_fired_at: string | null;
+}
+export type NotificationRuleInput = Omit<NotificationRule, "id" | "last_fired_at">;
+
+export interface AlertEvent {
+  id: number;
+  received_at: string;
+  cost_control: string;
+  project: string;
+  agent: string;
+  threshold: string;
+  unit: string;
+  total_consumed: number | null;
+  limit_value: number | null;
+  notified: boolean;
+}
+
+export interface PortalUser {
+  oid: string;
+  upn: string;
+  display_name: string;
+  role: Role;
+  enabled: boolean;
+  added_by: string;
+  added_at: string;
+  grants: Grant[];
+}
+export interface DirectoryUser {
+  oid: string;
+  upn: string;
+  display_name: string;
+  enabled: boolean;
+}
+export interface AuditEntry {
+  id: number;
+  at: string;
+  actor_oid: string;
+  actor_upn: string;
+  action: string;
+  target: string;
+  detail: Record<string, unknown>;
+  outcome: "ok" | "denied" | "error";
+}
+export interface AccessPage {
+  page: string;
+  azure_permissions: string[];
+  portal_access: boolean;
+  message: string | null;
+}

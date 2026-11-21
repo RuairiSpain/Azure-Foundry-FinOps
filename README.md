@@ -5,7 +5,8 @@ Foundry FinOps, token limits, chargeback, budgeting, usage, costs per project/ag
 | Project | Purpose | Start here |
 |---|---|---|
 | `foundry-finops/` | Publishable Python package (`pip install foundry-finops`) wrapping the REST APIs for Foundry cost controls, Cost Management, Azure Monitor, Log Analytics, quota, tags, alerts and API Management AI-gateway policies, plus OpenTelemetry usage tracking | `foundry-finops/README.md` |
-| `foundry-finops/examples/dashboard/` | Example web dashboard in the style of the Azure portal and Log Analytics, with CRUD pages, charts and downloads | `python foundry-finops/examples/dashboard/server.py` |
+| `portal/` | Web portal for cost and budget administrators: fleet and cost views, cost controls, cost centres, notifications, Entra sign-in, Bicep for App Service | `portal/README.md` |
+| `foundry-finops/examples/dashboard/` | Minimal example web dashboard (superseded by the portal) in the style of the Azure portal and Log Analytics, with CRUD pages, charts and downloads | `python foundry-finops/examples/dashboard/server.py` |
 | `foundry-finops-cowork/` | Separate project: MCP connector (Entra sign-in + on-behalf-of) and a Cowork plugin with report and governance skills | `foundry-finops-cowork/docs/SETUP.md` |
 
 **Start with the [usage guide](foundry-finops/docs/USAGE.md)**: install the package, import it, and run every query type from
