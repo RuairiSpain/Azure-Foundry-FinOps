@@ -23,8 +23,8 @@ jobs:
       version: ${{ steps.info.outputs.version }}
       prerelease: ${{ steps.info.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -45,7 +45,7 @@ jobs:
         run: |
           (cd foundry-finops && pytest)
           PYTHONPATH=foundry-finops-cowork python -m pytest -q foundry-finops-cowork/tests
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: release-notes.md
@@ -54,8 +54,8 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install build twine
@@ -71,7 +71,7 @@ jobs:
           for f in dist/*; do case "$f" in *"-$VERSION"[-.]*) ;; *) echo "::error::$f doesn't contain version $VERSION"; exit 1 ;; esac; done
           (cd dist && sha256sum * > SHA256SUMS.txt)
         working-directory: foundry-finops
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: foundry-finops/dist/
@@ -85,7 +85,7 @@ jobs:
     permissions:
       id-token: write   # PyPI trusted publishing: no API token is stored
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -99,11 +99,11 @@ jobs:
     permissions:
       contents: write   # create the release
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-notes
           path: .
