@@ -54,7 +54,10 @@ QUERY_REQUIREMENTS: dict[str, Requirement] = {
     "cost_dimensions": _need("Microsoft.CostManagement/dimensions/read", scope="account"),
     "cost_exports": _need("Microsoft.CostManagement/exports/read", scope="account"),
     "budgets": _need("Microsoft.Consumption/budgets/read", scope="resource_group"),
-    "cost_controls": _need(f"{_COG}/accounts/costControls/read", scope="account"),
+    # Lists the resource's cost controls and every project's; the usage estimate also uses metrics and cost data,
+    # but it is optional and reports "Usage unknown" without them.
+    "cost_controls": _need(f"{_COG}/accounts/costControls/read", f"{_COG}/accounts/projects/costControls/read",
+                           f"{_COG}/accounts/projects/read", scope="account"),
     "foundry_account": _need(f"{_COG}/accounts/read", scope="account"),
     "foundry_projects": _need(f"{_COG}/accounts/projects/read", scope="account"),
     "foundry_deployments": _need(f"{_COG}/accounts/deployments/read", scope="account"),

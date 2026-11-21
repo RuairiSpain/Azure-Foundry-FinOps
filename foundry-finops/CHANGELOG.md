@@ -4,6 +4,21 @@
 
 First release.
 
+### Fixes (documentation conformance review, `docs/DOCS_CONFORMANCE.md`)
+- A cost control now needs both `start_date` and `end_date` (the service requires a validity period; before, the SDK
+  sent none and the service answered HTTP 400). The MCP tool requires them too.
+- `cost_controls.update()` with no properties raises. The service treats an empty `properties` object as "clear every
+  property".
+- Usage windows are calendar-aligned in UTC (Daily 00:00, Weekly Monday, Monthly the 1st) instead of being anchored to
+  the start date. A control counts from its start date, and a control that has not started or has ended says so.
+- The overview forecast is `None` with `forecast_note` when Cost Management returns none; it no longer shows current
+  spend as the forecast.
+- `--roles`: the four Foundry roles (and their former Azure AI names) now cover cost controls and usage metrics.
+  The `cost_controls` query also requires the project permissions (`accounts/projects/read`,
+  `accounts/projects/costControls/read`).
+- `CostControlAlertEvent.dedupe_key_for(per)` adds the agent or project only for a budget per agent or per project and
+  includes the unit and start date. Events also expose `start_date` and `end_date`.
+
 ### Features
 - Gaps from the API review closed with the existing APIs (see `docs/API_COVERAGE.md`, section 8):
   `estimated-cost` (preview `FoundryModelEstimatedCost` metric) and cost-control usage from it; effective prices and the

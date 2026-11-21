@@ -49,10 +49,10 @@ class DemoServiceTests(unittest.TestCase):
 
     def test_crud_cost_control(self):
         self.svc.upsert_cost_control({"name": "new-cap", "amount": 50, "time_grain": "Daily",
-                                      "block": {"threshold": 100}})
+                                      "start_date": "2026-12-01", "end_date": "2027-07-01", "block": {"threshold": 100}})
         self.assertIn("new-cap", [c["name"] for c in self.svc.list_cost_controls()])
         with self.assertRaises(ValueError):
-            self.svc.upsert_cost_control({"name": "new-cap", "amount": 50, "category": "Tokens"})
+            self.svc.upsert_cost_control({"name": "new-cap", "amount": 50, "category": "Tokens", "start_date": "2026-12-01", "end_date": "2027-07-01"})
         self.svc.delete_cost_control("new-cap")
         self.assertNotIn("new-cap", [c["name"] for c in self.svc.list_cost_controls()])
 

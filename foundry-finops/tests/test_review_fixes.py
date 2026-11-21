@@ -221,7 +221,7 @@ class CostControlSpecTests(unittest.TestCase):
         from foundry_finops import Threshold
 
         cc = CostControl(name="cap", amount=1000, alert=Threshold(80, event_grid_connection_id=self.CONN),
-                         block=Threshold(100))
+                         block=Threshold(100), start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z")
         body = cc.to_dict()
         back = CostControl.from_dict({"name": "cap", "properties": body["properties"]})
         self.assertEqual((back.alert.threshold, back.block.threshold), (80, 100))
@@ -299,19 +299,22 @@ class UsageEstimateTests(unittest.TestCase):
         return LiveService(Settings(subscription_id="sub-1", resource_group="rg", foundry_account="acct"), client), s
 
     def test_window_start(self):
-        now = datetime(2026, 3, 18, 15, 30, tzinfo=timezone.utc)
-        cc = CostControl(name="c", amount=1, time_grain=TimeGrain.DAILY)
-        self.assertEqual(window_start(cc, now), datetime(2026, 3, 18, tzinfo=timezone.utc))
-        cc = CostControl(name="c", amount=1, time_grain=TimeGrain.MONTHLY)
-        self.assertEqual(window_start(cc, now), datetime(2026, 3, 1, tzinfo=timezone.utc))
-        cc = CostControl(name="c", amount=1, time_grain=TimeGrain.MONTHLY, start_date="2026-01-20T00:00:00Z")
-        self.assertEqual(window_start(cc, now), datetime(2026, 2, 20, tzinfo=timezone.utc))
-        cc = CostControl(name="c", amount=1, time_grain=TimeGrain.MONTHLY, start_date="2026-01-31T00:00:00Z")
-        self.assertEqual(window_start(CostControl(name="c", amount=1, start_date=cc.start_date),
-                                      datetime(2026, 2, 28, 1, tzinfo=timezone.utc)),
-                         datetime(2026, 2, 28, tzinfo=timezone.utc))  # clamps to the last day of a short month
-        cc = CostControl(name="c", amount=1, time_grain=TimeGrain.WEEKLY, start_date="2026-03-02T00:00:00Z")
+        # Windows are calendar-aligned in UTC: Daily 00:00, Weekly Monday 00:00, Monthly the 1st.
+        now = datetime(2026, 3, 18, 15, 30, tzinfo=timezone.utc)  # a Wednesday
+        long_ago = "2025-01-20T00:00:00Z"
+        for grain, expected in ((TimeGrain.DAILY, datetime(2026, 3, 18, tzinfo=timezone.utc)),
+                                (TimeGrain.WEEKLY, datetime(2026, 3, 16, tzinfo=timezone.utc)),
+                                (TimeGrain.MONTHLY, datetime(2026, 3, 1, tzinfo=timezone.utc))):
+            cc = CostControl(name="c", amount=1, time_grain=grain, start_date=long_ago)
+            self.assertEqual(window_start(cc, now), expected, grain)
+        # The start date does not move the reset day: a weekly control started on a Wednesday still resets on Monday.
+        cc = CostControl(name="c", amount=1, time_grain=TimeGrain.WEEKLY, start_date="2026-03-04T00:00:00Z")
         self.assertEqual(window_start(cc, now), datetime(2026, 3, 16, tzinfo=timezone.utc))
+        cc = CostControl(name="c", amount=1, time_grain=TimeGrain.MONTHLY, start_date="2026-01-31T00:00:00Z")
+        self.assertEqual(window_start(cc, now), datetime(2026, 3, 1, tzinfo=timezone.utc))
+        # A control that began inside the window counts only from its start.
+        cc = CostControl(name="c", amount=1, time_grain=TimeGrain.MONTHLY, start_date="2026-03-07T09:00:00Z")
+        self.assertEqual(window_start(cc, now), datetime(2026, 3, 7, 9, tzinfo=timezone.utc))
 
     def test_cost_budget_usage_comes_from_billed_cost(self):
         svc, s = self._service([{"id": self.ACCT + "/costControls/cap", "name": "cap", "properties": {
@@ -362,7 +365,7 @@ class UsageEstimateTests(unittest.TestCase):
         svc, s = self._service([])
         s.add("PUT", "/costControls/cap", 200, {"name": "cap", "properties": {"category": "Cost", "amount": 5,
                                                                               "timeGrain": "Monthly"}})
-        out = svc.upsert_cost_control({"name": "cap", "amount": 5})
+        out = svc.upsert_cost_control({"name": "cap", "amount": 5, "start_date": "2026-12-01", "end_date": "2027-07-01"})
         self.assertEqual(out["name"], "cap")
 
 

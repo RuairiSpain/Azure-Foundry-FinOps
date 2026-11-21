@@ -542,7 +542,8 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
             category=BudgetCategory.COST,                       # or BudgetCategory.TOKENS
             amount=500,
             time_grain=TimeGrain.MONTHLY,                       # Daily, Weekly or Monthly
-            start_date="2026-12-01",
+            start_date="2026-12-01",                            # both dates are required (UTC)
+            end_date="2027-07-01",                              # counting stops at the start of this day
             filters={"project": ["fraud-risk"]},                # project, deployment, agent, sessionId, tokenType
             sharing=BudgetSharing.PER_AGENT,                    # SHARED, PER_AGENT, PER_SESSION, PER_PROJECT
             alert=Threshold(80, event_grid_connection_id=conn_id),
@@ -552,7 +553,8 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
         only_if_new=True,                                       # fail with ConflictError if it already exists
     )
 
-    # Change one property. The budget type (category) can't be changed.
+    # Change one property. The budget type (category) can't be changed. Pass at least one property: the service
+    # treats an empty update as "clear everything", so the SDK refuses it.
     fo.cost_controls.update(acct, "fraud-risk-monthly", project="fraud-risk", amount=750)
 
     # Optimistic concurrency: change or delete only if nobody edited it since you read it
@@ -1131,7 +1133,9 @@ For streaming calls, the block arrives as an error event inside an HTTP 200 resp
 `is_budget_exceeded(headers, body)`.
 
 **Reading cost-control alerts.** Alerts are delivered through Event Grid as CloudEvents. Foundry sends one per request
-while usage is over a threshold, so de-duplicate with `dedupe_key`:
+while usage is over a threshold, so de-duplicate with `dedupe_key_for`. The event doesn't carry the cost control's name,
+so the key uses the source, unit, limit, start date, threshold and window end. Pass `per="agent"` or `per="project"` for
+a budget shared per agent or per project, and nothing for a budget everything shares (one notification is enough):
 
 ```python
 from foundry_finops.models import CostControlAlertEvent
@@ -1140,9 +1144,10 @@ seen: set = set()
 
 def handle(cloud_event: dict) -> None:
     event = CostControlAlertEvent.from_cloud_event(cloud_event)
-    if event.dedupe_key in seen:
+    key = event.dedupe_key_for("agent")        # None for a shared budget, "project" for a budget per project
+    if key in seen:
         return
-    seen.add(event.dedupe_key)
+    seen.add(key)
     print(f"{event.agent_name or event.project_name}: {event.total_consumed} of {event.limit} used ({event.threshold})")
 ```
 

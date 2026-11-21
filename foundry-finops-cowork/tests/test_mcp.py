@@ -84,12 +84,18 @@ class DemoProtocolTests(unittest.TestCase):
 
     def test_write_and_validation_error(self):
         ok = rpc(self.url, "tools/call", {"name": "upsert_cost_control", "arguments": {
-            "name": "mcp-cap", "amount": 25, "time_grain": "Daily", "block_threshold_pct": 100}}).json()["result"]
+            "name": "mcp-cap", "amount": 25, "time_grain": "Daily", "start_date": "2026-12-01", "end_date": "2027-07-01",
+            "block_threshold_pct": 100}}).json()["result"]
         self.assertFalse(ok["isError"])
         bad = rpc(self.url, "tools/call", {"name": "upsert_cost_control", "arguments": {
-            "name": "x", "amount": 5, "filters": {"agent": ["a"]}}}).json()["result"]
+            "name": "x", "amount": 5, "start_date": "2026-12-01", "end_date": "2027-07-01",
+            "filters": {"agent": ["a"]}}}).json()["result"]
         self.assertTrue(bad["isError"])
         self.assertIn("project", bad["content"][0]["text"])
+        # The service requires a validity period, so the tool schema requires both dates.
+        missing = rpc(self.url, "tools/call", {"name": "upsert_cost_control", "arguments": {
+            "name": "x", "amount": 5}}).json()["result"]
+        self.assertTrue(missing["isError"])
 
     def test_unknown_method_and_tool(self):
         self.assertEqual(rpc(self.url, "nope").json()["error"]["code"], -32601)

@@ -41,6 +41,18 @@ def iso_utc(value: datetime | date | str) -> str:
     return f"{value.isoformat()}T00:00:00Z"
 
 
+def _parse_utc(value: str) -> datetime | None:
+    """Parse an ISO 8601 UTC timestamp (up to seven fractional digits), or ``None`` if it isn't one."""
+    import re
+
+    v = re.sub(r"(\.\d{6})\d+", r"\1", value.strip().replace("Z", "+00:00"))
+    try:
+        parsed = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
 def _props(d: Mapping[str, Any]) -> dict[str, Any]:
     return dict(d.get("properties") or {})
 
@@ -303,6 +315,16 @@ class CostControl(ArmResource):
             max(_pct(a, self.amount) for a in self.alerts) > min(_pct(b, self.amount) for b in self.blocks)
         ):
             raise ValueError("Alert thresholds must be at or below the block threshold")
+        # The service requires a validity period with both dates (CostControlProperties.timePeriod), and the
+        # Foundry docs say every cost control has an end date.
+        if not self.start_date or not self.end_date:
+            raise ValueError("A cost control needs both start_date and end_date: the service requires a validity "
+                             "period. The cost control stops counting at the start of the end date.")
+        start, end = _parse_utc(iso_utc(self.start_date)), _parse_utc(iso_utc(self.end_date))
+        if start is None or end is None:
+            raise ValueError("start_date and end_date must be ISO 8601 dates or UTC timestamps")
+        if end <= start:
+            raise ValueError("end_date must be later than start_date")
 
     # ---------------------------------------------------------------- mapping
     def to_dict(self) -> dict[str, Any]:
@@ -444,12 +466,32 @@ class CostControlAlertEvent:
     agent_name: str | None = None
     model: str | None = None
     deployment_name: str | None = None
+    #: The cost control's own start and end dates (UTC), when the event carries them.
+    start_date: str | None = None
+    end_date: str | None = None
     data: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def dedupe_key_for(self, per: str | None = None) -> tuple[Any, ...]:
+        """Key to notify once per threshold and period. Foundry sends one event per request over a threshold.
+
+        The event doesn't carry the cost control's name, so the key uses the source, unit, limit, start date,
+        threshold and window end, which tell cost controls on one resource apart. Add the agent or project only for a
+        budget that is shared per agent (``per="agent"``) or per project (``per="project"``); for a budget everything
+        shares (``per=None``) every request counts toward one total, so one notification is enough.
+        """
+        if per not in (None, "agent", "project"):
+            raise ValueError("per must be None, 'agent' or 'project'")
+        who = self.agent_name if per == "agent" else self.project_name if per == "project" else None
+        return (self.source, self.unit, self.limit, self.start_date, self.threshold, self.window_end, per, who)
 
     @property
     def dedupe_key(self) -> tuple[Any, ...]:
-        """Foundry sends one event per request over a threshold – notify once per key."""
-        return (self.source, self.limit, self.threshold, self.window_end, self.agent_name, self.project_name)
+        """Key for a budget per agent (or per project when no agent is named): one notification per agent or project.
+
+        Use :meth:`dedupe_key_for` when you know how the budget is shared. For a budget everything shares, this key
+        notifies once per agent, which is more than needed but never hides an alert.
+        """
+        return self.dedupe_key_for("agent" if self.agent_name else "project" if self.project_name else None)
 
     @classmethod
     def from_cloud_event(cls, event: Mapping[str, Any]) -> CostControlAlertEvent:
@@ -472,6 +514,8 @@ class CostControlAlertEvent:
             agent_name=d.get("agentName"),
             model=d.get("model"),
             deployment_name=d.get("deploymentName"),
+            start_date=d.get("startDate"),
+            end_date=d.get("endDate"),
             data=d,
         )
 

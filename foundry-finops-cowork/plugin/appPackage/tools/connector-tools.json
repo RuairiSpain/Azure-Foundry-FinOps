@@ -200,11 +200,11 @@
           },
           "start_date": {
             "type": "string",
-            "description": "UTC date (YYYY-MM-DD), today or later."
+            "description": "UTC date (YYYY-MM-DD), today or later. Required."
           },
           "end_date": {
             "type": "string",
-            "description": "UTC date (YYYY-MM-DD)."
+            "description": "UTC date (YYYY-MM-DD), later than start_date. Required: the cost control stops counting at the start of this date."
           },
           "filters": {
             "type": "object",
@@ -255,7 +255,9 @@
         },
         "required": [
           "name",
-          "amount"
+          "amount",
+          "start_date",
+          "end_date"
         ],
         "additionalProperties": false
       },

@@ -112,6 +112,10 @@ class CostControlOperations(_Operations):
         """
         if "category" in properties:
             raise ValueError("A cost control's budget type can't be changed; create a new one")
+        if not properties:
+            # The service treats an empty ``properties`` object as "clear every property", so never send one.
+            raise ValueError("update() needs at least one property to change; an empty update would clear the whole "
+                             "cost control")
         url = f"{self._base(account, project, resource_group)}/{self._seg(name)}"
         resp = self._write("PATCH", url, body={"properties": properties},
                            headers={"If-Match": if_match} if if_match else None)

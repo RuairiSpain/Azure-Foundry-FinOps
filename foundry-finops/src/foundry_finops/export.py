@@ -381,9 +381,16 @@ NAMES = [q.name for q in QUERIES]
 #: Built-in roles whose "*/read" permission covers every query below (when held at a wide enough scope).
 BROAD_READ = frozenset({"owner", "contributor", "reader"})
 _COST = BROAD_READ | {"cost management reader", "cost management contributor"}
-_MONITOR = BROAD_READ | {"monitoring reader", "monitoring contributor"}
-_LOGS = _MONITOR | {"log analytics reader", "log analytics contributor"}
-_FOUNDRY = BROAD_READ | {"cognitive services contributor", "azure ai account owner", "azure ai owner"}
+#: The four Foundry roles under their current names and the names they had before the rename. Per the Foundry docs
+#: all of them can view cost controls and read usage metrics (``Microsoft.Insights/metrics/read``).
+FOUNDRY_ROLES = frozenset({
+    "foundry user", "foundry project manager", "foundry account owner", "foundry owner",
+    "azure ai user", "azure ai project manager", "azure ai account owner", "azure ai owner",
+})
+_MONITOR_ONLY = BROAD_READ | {"monitoring reader", "monitoring contributor"}
+_MONITOR = _MONITOR_ONLY | FOUNDRY_ROLES
+_LOGS = _MONITOR_ONLY | {"log analytics reader", "log analytics contributor"}  # Foundry roles can't query workspaces
+_FOUNDRY = BROAD_READ | FOUNDRY_ROLES | {"cognitive services contributor"}  # that role holds Microsoft.CognitiveServices/*
 _APIM = BROAD_READ | {"api management service reader role", "api management service contributor",
                       "api management service operator role"}
 

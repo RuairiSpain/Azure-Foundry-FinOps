@@ -57,7 +57,7 @@ class CostControlModelTests(unittest.TestCase):
 
     def test_multiple_filters_use_and(self):
         cc = CostControl(name="x", amount=10, category=BudgetCategory.TOKENS,
-                         filters={"project": ["p"], "agent": ["a"], "tokenType": ["output"]})
+                         start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z", filters={"project": ["p"], "agent": ["a"], "tokenType": ["output"]})
         f = cc.to_dict()["properties"]["filter"]
         self.assertEqual(len(f["and"]), 3)
 
@@ -83,7 +83,7 @@ class CostControlModelTests(unittest.TestCase):
                      "totalConsumed": 400.12, "limit": 500, "remaining": 99.88, "agentName": "a",
                      "windowEnd": "w"}})
         self.assertEqual(ev.remaining, 99.88)
-        self.assertEqual(ev.dedupe_key[-2], "a")
+        self.assertEqual(ev.dedupe_key[-2:], ("agent", "a"))
 
 
 class CostControlOperationTests(unittest.TestCase):
@@ -94,7 +94,7 @@ class CostControlOperationTests(unittest.TestCase):
     def test_create_project_cost_control_url_and_headers(self):
         self.s.add("PUT", "/costControls/", 201, {"name": "cap", "properties": {"category": "Cost", "amount": 5,
                                                                                   "timeGrain": "Daily"}})
-        out = self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5), project="p1",
+        out = self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z"), project="p1",
                                                      only_if_new=True)
         call = self.s.calls[-1]
         self.assertIn("/accounts/acct/projects/p1/costControls/cap", call["url"])

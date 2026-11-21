@@ -559,13 +559,13 @@ class LiveService(_Base):
         currency = next((r.get("Currency") for r in mtd or [] if r.get("Currency")), "USD")
         now = datetime.now(timezone.utc)
         month_end = now.replace(day=calendar.monthrange(now.year, now.month)[1], hour=23, minute=59, second=59)
-        forecast = spend
+        forecast: float | None = None  # never replaced by another number: the docs say it can be empty
         if mtd is not None:
             try:  # forecast isn't available for every scope/offer, so a failure is not a warning
                 fc = self.fo.cost.forecast(
                     CostQuery.between(now.replace(day=1, hour=0, minute=0, second=0), month_end).daily()
                 )
-                forecast = _sum_cost(fc) or spend
+                forecast = _sum_cost(fc) or None
             except Exception:
                 logger.debug("Forecast unavailable", exc_info=True)
         tokens = attempt("Azure Monitor metrics", lambda: self.fo.metrics.query(
@@ -579,7 +579,7 @@ class LiveService(_Base):
         out: dict[str, Any] = {
             "currency": currency,
             "kpis": {
-                "spend_mtd": round(spend, 2), "forecast_month_end": round(forecast, 2),
+                "spend_mtd": round(spend, 2), "forecast_month_end": round(forecast, 2) if forecast is not None else None,
                 "tokens_24h": int(sum(s.total for s in tokens if s.metric == "TokenTransaction")),
                 "requests_24h": int(sum(s.total for s in tokens if s.metric == "AzureOpenAIRequests")),
                 "cost_controls": len(ccs),
@@ -589,6 +589,9 @@ class LiveService(_Base):
             },
             **tops,
         }
+        if forecast is None and mtd is not None:
+            out["forecast_note"] = ("Cost Management returned no forecast: there may not be enough billing history yet, "
+                                    "or the scope or offer doesn't support forecasts.")
         if warnings:
             out["warnings"] = warnings
         return out
@@ -671,6 +674,14 @@ class LiveService(_Base):
         return cache[key]
 
     def _usage_for(self, cc: CostControl, now: datetime) -> tuple[float | None, str | None]:
+        from .models import _parse_utc, iso_utc
+
+        begins = _parse_utc(iso_utc(cc.start_date)) if cc.start_date else None
+        ends = _parse_utc(iso_utc(cc.end_date)) if cc.end_date else None
+        if begins and now < begins:
+            return 0.0, "The cost control starts later, so it hasn't counted any usage yet."
+        if ends and now >= ends:
+            return None, "The cost control has ended and no longer counts usage."
         start = window_start(cc, now)
         if "sessionId" in cc.filters or cc.sharing == BudgetSharing.PER_SESSION:
             return None, "Per-session budgets can't be reconstructed from billing or metrics data."
@@ -934,36 +945,22 @@ class LiveService(_Base):
 
 
 def window_start(cc: CostControl, now: datetime) -> datetime:
-    """Start (UTC) of the reset window containing ``now``.
+    """Start (UTC) of the usage window that contains ``now``.
 
-    Daily resets at 00:00 UTC; Weekly every 7 days and Monthly on the day of month of ``start_date``
-    (first of the month when none is set).
+    Reset windows are calendar-aligned in UTC: Daily at 00:00, Weekly on Monday at 00:00 and Monthly on the 1st
+    at 00:00. A cost control that started later than that counts only from its start date.
     """
+    from .models import _parse_utc, iso_utc
+
     today = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    anchor = None
-    if cc.start_date:
-        try:
-            anchor = datetime.fromisoformat(cc.start_date.replace("Z", "+00:00")).astimezone(timezone.utc)
-            anchor = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
-        except ValueError:
-            anchor = None
     if cc.time_grain == TimeGrain.DAILY:
-        return today
-    if cc.time_grain == TimeGrain.WEEKLY:
-        if anchor is None or anchor > today:
-            return today - timedelta(days=today.weekday())
-        return anchor + timedelta(days=((today - anchor).days // 7) * 7)
-    import calendar
-
-    def on_day(year: int, month: int) -> datetime:
-        day = min(anchor.day if anchor else 1, calendar.monthrange(year, month)[1])
-        return today.replace(year=year, month=month, day=day)
-
-    candidate = on_day(today.year, today.month)
-    if candidate > today:
-        year, month = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
-        candidate = on_day(year, month)
-    return candidate
+        window = today
+    elif cc.time_grain == TimeGrain.WEEKLY:
+        window = today - timedelta(days=today.weekday())
+    else:
+        window = today.replace(day=1)
+    started = _parse_utc(iso_utc(cc.start_date)) if cc.start_date else None
+    return started if started and window < started <= now else window
 
 
 def _describe(exc: BaseException) -> str:

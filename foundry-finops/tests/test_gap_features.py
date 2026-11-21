@@ -110,25 +110,26 @@ class CostControlTests(unittest.TestCase):
         self.fo.cost_controls.update("acct", "cap", amount=9, if_match='"e1"')
         self.assertEqual(self.s.calls[-1]["headers"]["If-Match"], '"e1"')
         self.s.add("PUT", "/costControls/cap", 200, self.body)
-        self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5), if_match='"e1"')
+        self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z"), if_match='"e1"')
         self.assertEqual(self.s.calls[-1]["headers"]["If-Match"], '"e1"')
         self.s.add("DELETE", "/costControls/cap", 200, None)
         self.fo.cost_controls.delete("acct", "cap", if_match='"e1"')
         self.assertEqual(self.s.calls[-1]["headers"]["If-Match"], '"e1"')
         with self.assertRaises(ValueError):
-            self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5), only_if_new=True,
+            self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z"), only_if_new=True,
                                                    if_match='"e1"')
 
     def test_feature_not_registered_is_explained(self):
         self.s.add("PUT", "/costControls/cap", 403, {"error": {"code": "FeatureNotRegistered", "message": "not registered"}})
         with self.assertRaisesRegex(ForbiddenError, "CostControlsByIdentity"):
-            self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5))
+            self.fo.cost_controls.create_or_update("acct", CostControl(name="cap", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z"))
 
     def test_names_in_filters_are_plain_names(self):
         for bad in ("", " p", "a/b", "../x", "a%20b", ".", "x" * 65, "a?b"):
             with self.subTest(value=bad), self.assertRaises(ValueError):
-                CostControl(name="c", amount=5, filters={"project": [bad]}).to_dict()
-        CostControl(name="c", amount=5, filters={"project": ["fraud-risk"], "deployment": ["gpt-5.4"]}).to_dict()
+                CostControl(name="c", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z", filters={"project": [bad]}).to_dict()
+        CostControl(name="c", amount=5, start_date="2026-12-01T00:00:00Z", end_date="2027-07-01T00:00:00Z",
+                    filters={"project": ["fraud-risk"], "deployment": ["gpt-5.4"]}).to_dict()
 
 
 class BudgetStatusTests(unittest.TestCase):
