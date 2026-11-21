@@ -120,10 +120,30 @@ Use `self._list` for paged results.
 
 ## Releasing
 
-Maintainers only. Set the version in `foundry-finops/src/foundry_finops/_version.py`, move the **Unreleased** notes in
-`CHANGELOG.md` under the new version and date, merge, then push a tag such as `v0.2.0`. The `publish` workflow builds the
-package and publishes it to PyPI through trusted publishing. It refuses to build while `pyproject.toml` still contains
-a `<your-org>` placeholder.
+Maintainers only.
+
+1. In a pull request, set the version in `foundry-finops/src/foundry_finops/_version.py` and move the **Unreleased**
+   notes in `foundry-finops/CHANGELOG.md` under a heading `## 0.2.0 – YYYY-MM-DD`. Merge it.
+2. Tag the merge commit and push the tag: `git tag v0.2.0 && git push origin v0.2.0`. Use `v0.2.0rc1` style tags for
+   release candidates; they are published as GitHub pre-releases.
+
+The `release` workflow (`.github/workflows/release.yml`) then:
+
+1. **verifies** that the tag is a valid version and equals `_version.py`, that the changelog has notes for it, that no
+   `your-org` placeholders remain, and that lint, mypy and both test suites pass;
+2. **builds** the sdist and wheel, checks them with `twine`, and checks they carry the tagged version;
+3. **publishes to PyPI** through trusted publishing, but only when the repository variable `PUBLISH_TO_PYPI` is
+   `true` (see below);
+4. **creates the GitHub release** with the changelog section as its notes and the package files plus `SHA256SUMS.txt`
+   attached.
+
+If a check fails, nothing is published or released. Fix the problem, delete the tag
+(`git push --delete origin v0.2.0` and `git tag -d v0.2.0`) and tag again. Don't re-use a version that already reached
+PyPI: PyPI never allows a file to be replaced.
+
+**One-time PyPI setup.** Create the project on PyPI, add a *trusted publisher* for this repository with workflow
+`release.yml` and environment `pypi`, create the `pypi` environment in the repository settings (add required reviewers
+if you want an approval step), then set the repository variable `PUBLISH_TO_PYPI` to `true`.
 
 ## Security issues
 
