@@ -4,6 +4,7 @@ Examples::
 
     foundry-finops --subscription <id> -g rg-ai cost-controls contoso-foundry
     foundry-finops --subscription <id> -g rg-ai --format csv cost --by project --account contoso-foundry
+    foundry-finops --subscription <id> --format csv cost --by ResourceGroupName --scope /subscriptions/<id>
     foundry-finops --subscription <id> -g rg-ai tokens contoso-foundry --hours 48
     foundry-finops --subscription <id> quota --location eastus2
     foundry-finops --demo cost --by team
@@ -23,7 +24,6 @@ from typing import Any
 
 from .errors import FinOpsError
 from .models import Column, Table, dumps
-from .service import GROUPINGS
 
 
 def _emit(data: Any, fmt: str) -> None:
@@ -153,9 +153,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("cost-controls", help="list Foundry cost controls")
     p.add_argument("account", nargs="?", default=account_default, help="Foundry resource name (or FINOPS_FOUNDRY_ACCOUNT)")
     p = sub.add_parser("cost", help="billed cost grouped by project/agent/deployment/model/team")
-    p.add_argument("--by", default="project", choices=GROUPINGS)
+    p.add_argument("--by", default="project",
+                   help="project, agent, deployment, model or team; or any tag name (lower case) or Cost Management "
+                        "dimension (capitalised, e.g. ResourceGroupName). Default: project")
     p.add_argument("--days", type=int, default=30)
     p.add_argument("--account", default=account_default, help="Foundry resource name (project/agent/deployment tags)")
+    p.add_argument("--scope", help="query this scope instead: /subscriptions/<id>, a resource group, a resource ID, a "
+                                   "management group or a billing scope. The project tag needs the Foundry resource ID")
     p = sub.add_parser("tokens", help="token metrics per deployment")
     p.add_argument("account", nargs="?", default=account_default, help="Foundry resource name (or FINOPS_FOUNDRY_ACCOUNT)")
     p.add_argument("--hours", type=int, default=24)
@@ -210,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     if args.demo:
+        if getattr(args, "scope", None):
+            ap.error("--scope queries Azure and can't be used with --demo")
         from .service import DemoService
 
         svc: Any = DemoService()
@@ -234,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "cost-controls":
             result = svc.list_cost_controls()
         elif args.cmd == "cost":
-            result = svc.cost_series(args.by, args.days)
+            result = svc.cost_series(args.by, args.days, scope=args.scope) if args.scope \
+                else svc.cost_series(args.by, args.days)
         elif args.cmd == "tokens":
             result = svc.token_series("deployment", args.hours)
         elif args.cmd == "budgets":

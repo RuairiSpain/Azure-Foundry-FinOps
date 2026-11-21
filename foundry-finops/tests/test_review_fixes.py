@@ -321,3 +321,39 @@ class UsageEstimateTests(unittest.TestCase):
                                                                               "timeGrain": "Monthly"}})
         out = svc.upsert_cost_control({"name": "cap", "amount": 5})
         self.assertEqual(out["name"], "cap")
+
+
+class CostScopeTests(unittest.TestCase):
+    ROWS = {"properties": {"columns": [{"name": "Cost", "type": "Number"}, {"name": "UsageDate", "type": "Number"},
+                                       {"name": "ResourceGroupName", "type": "String"},
+                                       {"name": "Currency", "type": "String"}],
+                           "rows": [[3.5, 20260105, "rg-ai", "USD"]]}}
+
+    def service(self):
+        from foundry_finops.service import LiveService
+
+        s = FakeSession()
+        s.add("POST", "/providers/Microsoft.CostManagement/query", 200, self.ROWS)
+        return LiveService(Settings(subscription_id="sub-1", resource_group="rg"), make_client(s)), s
+
+    def test_scope_and_dimension_name_are_used_as_given(self):
+        svc, s = self.service()
+        out = svc.cost_series("ResourceGroupName", 7, scope="/subscriptions/sub-1")
+        post = s.calls[-1]
+        self.assertTrue(post["url"].startswith("https://management.azure.com/subscriptions/sub-1/providers/"))
+        self.assertEqual(post["json"]["dataset"]["grouping"], [{"type": "Dimension", "name": "ResourceGroupName"}])
+        self.assertEqual(out["rows"], [["2026-01-05", "rg-ai", 3.5, "USD"]])
+
+    def test_a_tag_name_works_without_a_foundry_account(self):
+        svc, s = self.service()
+        svc.cost_series("cost-center", 7, scope="/subscriptions/sub-1/resourceGroups/rg")
+        self.assertEqual(s.calls[-1]["json"]["dataset"]["grouping"], [{"type": "TagKey", "name": "cost-center"}])
+
+    def test_cli_scope_flag_parses_and_is_refused_with_demo(self):
+        from foundry_finops.cli import _build_parser, main
+
+        args = _build_parser().parse_args(["cost", "--by", "ResourceGroupName", "--scope", "/subscriptions/x"])
+        self.assertEqual((args.by, args.scope), ("ResourceGroupName", "/subscriptions/x"))
+        with self.assertRaises(SystemExit) as cm:
+            main(["--demo", "cost", "--scope", "/subscriptions/x"])
+        self.assertEqual(cm.exception.code, 2)

@@ -600,18 +600,25 @@ class LiveService(_Base):
             out["warnings"] = warnings
         return out
 
-    def cost_series(self, group_by: str = "project", days: int = 30) -> dict[str, Any]:
-        _check_group(group_by)
-        tag = {"project": "project", "agent": "agent.name", "deployment": "deployment",
-               "team": self.settings.team_tag}.get(group_by)
-        if group_by == "model":
-            t = self.fo.cost.cost_by("MeterSubCategory", days=days)
-        else:
-            scope = self._account_id if group_by in ("project", "agent", "deployment") else None
-            t = self.fo.cost.cost_by(tag or group_by, days=days, scope=scope)
+    def cost_series(self, group_by: str = "project", days: int = 30, scope: str | None = None) -> dict[str, Any]:
+        """Billed cost per day grouped by ``group_by``.
+
+        ``group_by`` is project, agent, deployment, model or team, or any tag name (lower case) or Cost Management
+        dimension (capitalised, e.g. ``ResourceGroupName``). ``scope`` is a subscription, resource group, resource,
+        management group or billing scope; by default the Foundry resource for the Foundry tags, otherwise the
+        client's resource group. Grouping by the ``project`` tag needs the Foundry resource's scope.
+        """
+        if not group_by or not group_by.strip():
+            raise ValueError("group_by is required")
+        known = {"project": "project", "agent": "agent.name", "deployment": "deployment",
+                 "team": self.settings.team_tag}
+        name = "MeterSubCategory" if group_by == "model" else known.get(group_by, group_by)
+        if scope is None and group_by in ("project", "agent", "deployment"):
+            scope = self._account_id
+        t = self.fo.cost.cost_by(name, days=days, scope=scope)
         recs = []
         for r in t:
-            key = r.get("TagValue") or r.get(tag or "") or r.get("MeterSubCategory") or "(untagged)"
+            key = r.get("TagValue") or r.get(name) or "(untagged)"
             recs.append({"UsageDate": r.get("UsageDate"), group_by: key,
                          "Cost": round(r.get("Cost") or r.get("PreTaxCost") or 0, 4), "Currency": r.get("Currency")})
         return Table.from_records(recs, "Cost").to_json()

@@ -5,6 +5,8 @@
 First release.
 
 ### Features
+- `foundry-finops cost --scope` queries any scope (subscription, resource group, resource, management group, billing
+  scope), and `--by` accepts any tag name or Cost Management dimension as well as the five Foundry groups.
 - Usage guide (`docs/USAGE.md`): install, import, and every query type with the SDK call and CLI command side by
   side. A test checks that every sample refers to real imports, methods, arguments and CLI flags.
 - First release: `FinOpsClient` with foundry, cost_controls, cost, metrics, logs, quota, tags, alerts, apim and

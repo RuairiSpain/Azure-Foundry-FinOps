@@ -292,7 +292,17 @@ foundry-finops cost --by project --account contoso-foundry
 foundry-finops cost --by agent --days 7 --account contoso-foundry
 foundry-finops --format csv cost --by team --days 90 --account contoso-foundry > cost-by-team.csv
 foundry-finops --format json cost --by model --account contoso-foundry
+
+# Any scope with --scope: a subscription, resource group, resource ID, management group or billing scope
+foundry-finops cost --by ResourceGroupName --scope /subscriptions/<subscription-id>            # a dimension (capitalised)
+foundry-finops cost --by cost-center --scope /subscriptions/<subscription-id>/resourceGroups/rg-ai   # any tag name
+foundry-finops cost --by project --scope /subscriptions/<subscription-id>/resourceGroups/rg-ai/providers/Microsoft.CognitiveServices/accounts/contoso-foundry
 ```
+
+`--by` takes `project`, `agent`, `deployment`, `model` or `team`, or any tag name (lower case) or Cost Management
+dimension (capitalised). Without `--scope`, the Foundry tags use the Foundry resource (`--account`) and everything else
+uses the resource group. The `project` tag only exists at the Foundry resource's scope, so pass that resource ID as
+`--scope` to group by project from another account. `--scope` can't be combined with `--demo`.
 
 The `--format` option (`table`, `json` or `csv`) goes before the sub-command.
 
@@ -1036,7 +1046,7 @@ The global options come **before** the command.
 | Command | Options | Shows |
 |---|---|---|
 | `cost-controls [ACCOUNT]` | `ACCOUNT` or `FINOPS_FOUNDRY_ACCOUNT` | Cost controls with estimated usage and state |
-| `cost` | `--by project\|agent\|deployment\|model\|team` (default `project`), `--days N` (default 30), `--account NAME` | Billed cost per day by group |
+| `cost` | `--by GROUP` (default `project`; also any tag or dimension), `--days N` (default 30), `--account NAME`, `--scope SCOPE` | Billed cost per day by group |
 | `tokens [ACCOUNT]` | `--hours N` (default 24) | Tokens and requests per deployment |
 | `budgets` | none | Cost Management budgets |
 | `quota` | `--location REGION` (default `eastus2`, or `FINOPS_LOCATION`) | Regional model quota |
