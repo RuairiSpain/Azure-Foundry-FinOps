@@ -136,6 +136,52 @@ I have not seen the preview SDK referred to in the proposal and cannot confirm w
 - Show cost centre managers aggregated figures. Per-person usage is for administrators only, or off.
 - Do not record prompts or completions (content recording stays off).
 
+### 4.9 Attribution is optional per agent
+
+Identity is opt-in. A call with no caller identity is recorded as `caller_type=unknown`; nothing fails.
+
+- Its cost goes to the pool's "unattributed" line, or is split in proportion to attributed usage, as a per-pool setting.
+- Existing percentage rules keep working. The usage mode applies only to pools that turn it on.
+- Each agent gets a coverage figure (share of tokens with a known identity), so owners can see what to fix.
+
+### 4.10 Automatic capture without code in the agent: what Microsoft documents
+
+Checked against Microsoft Learn pages on 21 November 2026. Absence from a page is not proof a feature does not exist;
+re-check before building.
+
+| Mechanism | Needs developer code? | What it can fill | Finding |
+|---|---|---|---|
+| API Management in front of the models, `llm-emit-token-metric` with custom dimensions | No (the app points at the gateway) | Token counts, plus dimensions from the validated token | Policy takes `<dimension name=".." value="..">` where `value` can be a policy expression, so a validated JWT claim such as `oid` is possible. The page gives no claim example; treat that as unverified until tested. Limits: 5 custom dimensions per policy, 100 unique values per dimension, 1,000 active time series per namespace; beyond that data is silently discarded. Counts cached and reasoning tokens in preview only. Streaming needs `include_usage`, or counts are inaccurate if the stream is interrupted. |
+| Global OpenTelemetry span processor | One setup call per app | Any attribute on every span | The Foundry client-side tracing page shows `provider.add_span_processor(...)` with `span.set_attribute("session.id", ...)` in `on_start`. The sample value is fixed. No per-request identity mechanism is documented. Marked experimental preview. |
+| Trace baggage | One setting and propagation code | User identifiers passed to child calls | Python only. Off by default (`AZURE_TRACING_GEN_AI_TRACE_CONTEXT_PROPAGATION_INCLUDE_BAGGAGE`). The page warns it can expose PII and is sent to Azure OpenAI, where it may be logged. |
+| Foundry diagnostic logs (`RequestResponse`) | No | Status, latency; possibly an identity blob | The common resource-log schema has an optional `identity` property. No Foundry page found that confirms it holds the Entra object ID. Test with a known identity before relying on it. |
+| Foundry-added trace attributes | No | Agent identity | Hosted agents get project, agent name, version and ID on spans; `gen_ai.agent.id` is the agent key. External agents must set it themselves. Server-side traces run under the project's managed identity. |
+
+Not found in any page read: a pre-call hook or trigger in Foundry that lets us inject fields without code, and a
+standard end-user identity attribute (`user.id`, `enduser.id` or similar) on Foundry spans.
+
+Consequences for the design:
+
+- **Agent-side fields can be automatic.** Agent ID, project, deployment, model and token counts come from Foundry
+  telemetry or the gateway with no agent code.
+- **The end user's identity cannot come from the model layer.** Server-side calls run under the project's or agent's
+  identity. The user's `oid` has to be taken where the user's token is validated (the app, API or gateway at the front
+  door) and carried to the model call as a dimension, header or baggage.
+- **Gateway metric limits matter.** Putting `oid` in an APIM metric dimension hits the 100-unique-values limit quickly.
+  Send per-call records (gateway log or custom event) to Log Analytics for the per-person split, and keep metrics for
+  coarse dimensions such as agent or department.
+- **Recommended path:** gateway at the front door that validates the token, emits per-call records with `oid`, `tid`
+  and the agent ID, and an optional span processor in apps that want trace-level detail. Agents that do neither fall into
+  `unknown` (see 4.9).
+
+Open items from this check: test an APIM `validate-jwt` claim as a dimension and as a logged field; inspect a
+`RequestResponse` row for a known identity; confirm which APIM API schema type covers Foundry model deployments.
+
+Sources: [llm-emit-token-metric policy](https://learn.microsoft.com/en-us/azure/api-management/llm-emit-token-metric-policy),
+[Add client-side tracing to Foundry agents](https://learn.microsoft.com/en-us/azure/foundry/observability/how-to/trace-agent-client-side),
+[Configure tracing for AI agent frameworks](https://learn.microsoft.com/en-us/azure/foundry/observability/how-to/trace-agent-framework),
+[Enable diagnostic logging for Foundry](https://learn.microsoft.com/en-us/azure/foundry/how-to/diagnostic-logging).
+
 ## 5. Pitfalls and edge cases
 
 | Case | Handling |
