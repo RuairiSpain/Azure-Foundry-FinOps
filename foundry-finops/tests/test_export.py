@@ -152,3 +152,68 @@ class AuthFailureTests(unittest.TestCase):
                 run_export(ctx, Path(tmp))
             self.assertFalse(list(Path(tmp).rglob("*.json")))  # nothing half-written
         self.assertEqual(s.calls, [])
+
+
+class RoleFilterTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_every_query_has_an_explicit_role_entry(self):
+        from foundry_finops.export import QUERY_ROLES
+
+        missing = [q.name for q in QUERIES if not q.name.startswith("kql_") and q.name not in QUERY_ROLES]
+        self.assertEqual(missing, [])
+
+    def test_roles_limit_the_download_and_the_rest_are_recorded_as_skipped(self):
+        s = FakeSession()
+        s.add("POST", "/providers/Microsoft.CostManagement/query", 200, COST)
+        s.add("GET", "/providers/Microsoft.Insights/metrics", 200, {"value": []})
+        result = run_export(context(s), self.out, roles=["cost management reader"])
+        by = {r.name: r for r in result.results}
+        self.assertEqual(by["cost_by_agent"].status, "ok")
+        self.assertEqual(by["budgets"].status, "failed")  # allowed, so tried; no fake route -> 404
+        self.assertEqual(by["token_usage_by_deployment"].status, "skipped")
+        self.assertIn("not allowed by the roles given", by["token_usage_by_deployment"].detail)
+        self.assertIn("Monitoring Reader", by["token_usage_by_deployment"].detail)
+        self.assertEqual(by["retail_price_sheet"].status, "failed")  # public API: always tried (no route -> 404)
+        # skipped queries make no Azure call at all
+        self.assertFalse([c for c in s.calls if "/providers/Microsoft.Insights/metrics" in c["url"]])
+        manifest = json.loads((self.out / "FinOps/2026-02-10/_manifest.json").read_text())
+        self.assertEqual(manifest["parameters"]["roles"], ["cost management reader"])
+
+    def test_broad_roles_allow_everything_and_matching_ignores_case(self):
+        from foundry_finops.export import allowed_by_roles
+
+        for role in ("Reader", "OWNER", " contributor "):
+            self.assertTrue(all(allowed_by_roles(q, [role]) for q in QUERIES), role)
+
+    def test_no_switch_tries_everything(self):
+        from foundry_finops.export import allowed_by_roles
+
+        self.assertTrue(all(allowed_by_roles(q, None) for q in QUERIES))
+
+    def test_unrelated_role_allows_only_public_queries(self):
+        from foundry_finops.export import allowed_by_roles
+
+        allowed = [q.name for q in QUERIES if allowed_by_roles(q, ["Billing Reader"])]
+        self.assertEqual(allowed, ["retail_price_sheet"])
+
+    def test_parse_roles(self):
+        from foundry_finops.export import parse_roles
+
+        self.assertEqual(parse_roles("Reader, Monitoring Reader,,"), ["Reader", "Monitoring Reader"])
+        with self.assertRaises(ValueError):
+            parse_roles(" , ")
+
+    def test_cli_list_shows_what_would_run(self):
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(main(["download", "--list", "--roles", "Monitoring Reader"]), 0)
+        out = buf.getvalue()
+        self.assertIn("run   token_usage_by_model", out)
+        self.assertIn("skip  cost_by_agent", out)

@@ -157,7 +157,8 @@ Reader** on the subscription, plus **Log Analytics Reader** for the KQL files.
 | `retail_price_sheet` | None (public API) | n/a |
 
 * A query without its role fails on its own (HTTP 403 in `_manifest.json`) and the others still download. A sign-in
-  failure stops the whole run.
+  failure stops the whole run. To skip those queries up front, pass the identity's roles:
+  `foundry-finops download ... --roles "Reader,Monitoring Reader"` (see `docs/SETUP.md`).
 * No data-plane roles (Cognitive Services User, Azure AI User) are needed: everything is management-plane reads.
 * Cost data also depends on your billing arrangement. Enterprise Agreements need the enrollment's "view charges"
   settings enabled, Microsoft Customer Agreements need the billing profile to allow it, and CSP subscriptions need the

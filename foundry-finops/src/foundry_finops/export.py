@@ -278,6 +278,72 @@ QUERIES += [
 NAMES = [q.name for q in QUERIES]
 
 
+# ------------------------------------------------------------------- roles
+#: Built-in roles whose "*/read" permission covers every query below (when held at a wide enough scope).
+BROAD_READ = frozenset({"owner", "contributor", "reader"})
+_COST = BROAD_READ | {"cost management reader", "cost management contributor"}
+_MONITOR = BROAD_READ | {"monitoring reader", "monitoring contributor"}
+_LOGS = _MONITOR | {"log analytics reader", "log analytics contributor"}
+_FOUNDRY = BROAD_READ | {"cognitive services contributor", "azure ai account owner", "azure ai owner"}
+_APIM = BROAD_READ | {"api management service reader role", "api management service contributor",
+                      "api management service operator role"}
+
+#: Roles that allow each query (lower-case). ``None`` means no Azure role is needed (a public API).
+#: Role names are matched case-insensitively and the roles are assumed to be held at a scope that covers the
+#: resource (the subscription for the quota, Event Grid and tag-inventory calls).
+QUERY_ROLES: dict[str, frozenset[str] | None] = {
+    "cost_daily_total": _COST, "cost_by_project": _COST, "cost_by_agent": _COST, "cost_by_deployment": _COST,
+    "cost_by_team": _COST, "cost_by_model": _COST, "cost_by_meter": _COST, "cost_forecast": _COST,
+    "cost_dimensions": _COST, "cost_exports": _COST, "budgets": _COST,
+    "cost_controls": _FOUNDRY, "foundry_account": _FOUNDRY, "foundry_projects": _FOUNDRY,
+    "foundry_deployments": _FOUNDRY, "foundry_connections": _FOUNDRY,
+    "foundry_event_grid_topics": BROAD_READ,
+    "token_usage_by_deployment": _MONITOR, "token_usage_by_model": _MONITOR, "metric_definitions": _MONITOR,
+    "quota_usage": BROAD_READ, "quota_models": BROAD_READ, "tags": BROAD_READ,
+    "alerts": _MONITOR, "apim_gateway": _APIM,
+    "retail_price_sheet": None,
+}
+
+
+def roles_for(query: Query) -> frozenset[str] | None:
+    """Roles that allow ``query``; saved KQL queries use the log-reading roles."""
+    if query.name in QUERY_ROLES:
+        return QUERY_ROLES[query.name]
+    if query.name.startswith("kql_"):
+        return _LOGS
+    return BROAD_READ  # a new query without an entry is assumed to need broad read access
+
+
+def parse_roles(text: str) -> list[str]:
+    """Split ``"Reader, Cost Management Reader"`` into role names; empty items are dropped."""
+    roles = [r.strip() for r in text.split(",") if r.strip()]
+    if not roles:
+        raise ValueError("--roles needs at least one role name, comma-separated, e.g. 'Reader,Monitoring Reader'")
+    return roles
+
+
+def allowed_by_roles(query: Query, roles: list[str] | None) -> bool:
+    """``True`` if the roles allow ``query``. ``roles=None`` (no switch) allows everything."""
+    if roles is None:
+        return True
+    needed = roles_for(query)
+    return needed is None or bool({r.strip().lower() for r in roles} & needed)
+
+
+def known_role_names() -> set[str]:
+    out: set[str] = set(BROAD_READ)
+    for q in QUERIES:
+        out |= roles_for(q) or set()
+    return out
+
+
+def _needs_text(query: Query) -> str:
+    needed = sorted(roles_for(query) or ())
+    narrow = [n for n in needed if n not in BROAD_READ]
+    names = [n.title() for n in [*sorted(BROAD_READ), *narrow]]
+    return "needs one of: " + ", ".join(names)
+
+
 # ------------------------------------------------------------------- runner
 @dataclass
 class QueryResult:
@@ -299,8 +365,14 @@ class ExportResult:
         return [r for r in self.results if r.status == "failed"]
 
 
-def run_export(ctx: ExportContext, output_dir: Path, only: list[str] | None = None) -> ExportResult:
-    """Run the selected queries and write one JSON file each under ``<output_dir>/FinOps/<today>/``."""
+def run_export(
+    ctx: ExportContext, output_dir: Path, only: list[str] | None = None, roles: list[str] | None = None
+) -> ExportResult:
+    """Run the selected queries and write one JSON file each under ``<output_dir>/FinOps/<today>/``.
+
+    ``roles`` limits the download to the queries those Azure roles allow; the rest are recorded as skipped.
+    ``None`` tries everything.
+    """
     selected = QUERIES
     if only:
         unknown = [n for n in only if n not in NAMES]
@@ -315,12 +387,14 @@ def run_export(ctx: ExportContext, output_dir: Path, only: list[str] | None = No
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     params = {"account": ctx.account, "project": ctx.project, "start": ctx.start.isoformat(),
               "end": ctx.end.isoformat(), "subscription_id": ctx.client.subscription_id,
-              "resource_group": ctx.client.resource_group, "location": ctx.location}
+              "resource_group": ctx.client.resource_group, "location": ctx.location, "roles": roles}
     results: list[QueryResult] = []
     for q in selected:
         began = time.monotonic()
         res = QueryResult(q.name, "ok")
         try:
+            if not allowed_by_roles(q, roles):
+                raise QuerySkipped(f"not allowed by the roles given ({_needs_text(q)})")
             for need in q.needs:
                 if not getattr(ctx, need):
                     flag = need.replace("_", "-")

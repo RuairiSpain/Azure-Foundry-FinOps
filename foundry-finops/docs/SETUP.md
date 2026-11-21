@@ -112,10 +112,34 @@ foundry-finops download --start 2026-03-01 --end 2026-03-31 --only cost_by_agent
 | `--start`, `--end` | First and last day, inclusive, `YYYY-MM-DD`. Required. |
 | `--project` | Filter cost data to one Foundry project. Omit for all projects. |
 | `--only a,b` | Run only these queries. Names come from `--list`. |
-| `--list` | Print the query names and exit. |
+| `--roles "A,B"` | The identity's Azure roles, comma-separated. Only the queries those roles allow are run (see below). Default: try everything. |
+| `--list` | Print the query names and exit. With `--roles`, each line starts with `run` or `skip`, so it is a dry run. |
 | `--output-dir` | Where the `FinOps` folder is created. Default: the current directory. |
 
 The global options `--subscription` and `-g` go **before** `download`.
+
+**Limiting the download to what your roles allow.** Without `--roles` every query is tried, and a query you aren't
+allowed to run simply fails with a 403. If you know the roles, pass them and the rest are skipped without calling Azure:
+
+```bash
+foundry-finops download --start 2026-01-01 --end 2026-03-31 --roles "Reader,Cost Management Reader,Monitoring Reader"
+foundry-finops download --list --roles "Monitoring Reader"        # shows which queries would run (dry run)
+```
+
+* Role names are the Azure built-in names, matched without regard to case. Quote the list because names contain spaces.
+* Skipped queries appear in `_manifest.json` as `skipped` with the roles that would allow them, and the roles you gave
+  are recorded under `parameters`.
+* **Owner, Contributor and Reader** allow every query (their `*/read` permission covers them). The narrower roles allow
+  their own area: **Cost Management Reader/Contributor** for the `cost_*` files and `budgets`; **Monitoring
+  Reader/Contributor** for `token_usage_*`, `metric_definitions` and `alerts`; **Log Analytics Reader/Contributor**
+  (and Monitoring roles) for `kql_*`; **Cognitive Services Contributor** or the Azure AI account/owner roles for the
+  Foundry files; the **API Management Service** reader/contributor/operator roles for `apim_gateway`.
+  `retail_price_sheet` needs no role and always runs.
+* The command assumes the roles are held at a scope that covers the resource (the subscription for `quota_*`,
+  `foundry_event_grid_topics` and the tag inventory). It does not look up the real assignments, so it can't know if
+  a role is held only on a resource group. Anything still refused by Azure is recorded as `failed` with the 403.
+* A role name the tool doesn't know, including a custom role, is reported as a warning and ignored. Custom roles
+  need to be passed as the built-in roles that cover the same permissions.
 
 Running it twice on the same day overwrites that day's files. Running it on another day creates a new dated folder.
 

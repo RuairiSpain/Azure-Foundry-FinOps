@@ -62,11 +62,17 @@ def _date(value: str) -> date:
 
 
 def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
-    from .export import QUERIES, ExportContext, run_export
+    from .export import QUERIES, ExportContext, allowed_by_roles, known_role_names, parse_roles, run_export
 
+    roles = parse_roles(args.roles) if args.roles is not None else None
+    if roles:
+        unknown = [r for r in roles if r.lower() not in known_role_names()]
+        if unknown:  # a typo here would silently skip queries, so say so
+            print(f"warning: not a role this tool recognises (ignored): {', '.join(unknown)}", file=sys.stderr)
     if args.list:
         for q in QUERIES:
-            print(f"{q.name:42} {q.description}")
+            mark = "" if roles is None else ("run   " if allowed_by_roles(q, roles) else "skip  ")
+            print(f"{mark}{q.name:42} {q.description}")
         return 0
     if args.demo:
         ap.error("download reads from Azure and can't use --demo")
@@ -93,7 +99,7 @@ def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             location=args.location, logs_target=args.logs_target, apim_service=args.apim_service, team_tag=team_tag,
         )
         only = [n.strip() for n in args.only.split(",") if n.strip()] if args.only else None
-        result = run_export(ctx, Path(args.output_dir), only)
+        result = run_export(ctx, Path(args.output_dir), only, roles)
     finally:
         svc.fo.close()
     rows = [{"query": r.name, "status": r.status, "rows": r.rows, "detail": r.detail or ""} for r in result.results]
@@ -133,6 +139,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--end", type=_date, help="last day (inclusive), YYYY-MM-DD")
     p.add_argument("--output-dir", default=".", help="where the FinOps folder is created (default: working directory)")
     p.add_argument("--only", help="comma-separated query names to run (default: all)")
+    p.add_argument("--roles", help="the identity's Azure roles, comma-separated (e.g. 'Reader,Monitoring Reader'): "
+                                   "only the queries those roles allow are run. Default: try everything")
     p.add_argument("--list", action="store_true", help="list the query names and exit")
     p.add_argument("--location", default=os.environ.get("FINOPS_LOCATION", "eastus2"), help="region for quota and prices")
     p.add_argument("--logs-target", default=os.environ.get("FINOPS_LOGS_TARGET", ""),

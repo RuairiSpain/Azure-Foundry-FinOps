@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- `foundry-finops download --roles "Reader,Monitoring Reader"` limits the download to the queries those Azure roles
+  allow and records the others as skipped with the roles that would allow them. Without the switch everything is
+  tried. `download --list --roles ...` is a dry run.
 - `foundry-finops download`: runs every read query the SDK offers (daily cost by project/agent/deployment/team/
   model/meter, forecast, budgets, exports, cost controls with usage, deployments, token metrics, quota, tags,
   alerts, API Management, retail prices and the saved KQL queries) for a start/end date and saves one JSON file per
