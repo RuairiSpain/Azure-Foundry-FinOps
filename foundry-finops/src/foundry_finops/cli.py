@@ -7,6 +7,8 @@ Examples::
     foundry-finops --subscription <id> -g rg-ai tokens contoso-foundry --hours 48
     foundry-finops --subscription <id> quota --location eastus2
     foundry-finops --demo cost --by team
+    foundry-finops --subscription <id> -g rg-ai download --account contoso-foundry --project fraud-risk \
+        --start 2026-01-01 --end 2026-03-31          # every query -> ./FinOps/<today>/<query>.json
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ import argparse
 import json
 import os
 import sys
+from datetime import date
+from pathlib import Path
 from typing import Any
 
 from .errors import FinOpsError
@@ -50,6 +54,53 @@ def _print_table(cols: list[str], rows: list[list[Any]]) -> None:
         print("  ".join(v[:w].ljust(w) for v, w in zip(r, widths, strict=False)))
 
 
+def _date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a date; use YYYY-MM-DD") from None
+
+
+def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    from .export import QUERIES, ExportContext, run_export
+
+    if args.list:
+        for q in QUERIES:
+            print(f"{q.name:42} {q.description}")
+        return 0
+    if args.demo:
+        ap.error("download reads from Azure and can't use --demo")
+    if not args.subscription:
+        ap.error("--subscription (or FINOPS_SUBSCRIPTION_ID) is required")
+    if not args.account:
+        ap.error("download: pass --account (or set FINOPS_FOUNDRY_ACCOUNT)")
+    if not args.start or not args.end:
+        ap.error("download: --start and --end are required (YYYY-MM-DD)")
+    if args.end < args.start:
+        ap.error("--end must not be before --start")
+    from .service import LiveService, Settings
+
+    team_tag = os.environ.get("FINOPS_TEAM_TAG", "team")
+    svc = LiveService(Settings(
+        subscription_id=args.subscription, resource_group=args.resource_group or "", foundry_account=args.account,
+        apim_service=args.apim_service, location=args.location, logs_target=args.logs_target, team_tag=team_tag,
+    ))
+    try:
+        ctx = ExportContext(
+            client=svc.fo, service=svc, account=args.account, start=args.start, end=args.end, project=args.project,
+            location=args.location, logs_target=args.logs_target, apim_service=args.apim_service, team_tag=team_tag,
+        )
+        only = [n.strip() for n in args.only.split(",") if n.strip()] if args.only else None
+        result = run_export(ctx, Path(args.output_dir), only)
+    finally:
+        svc.fo.close()
+    rows = [{"query": r.name, "status": r.status, "rows": r.rows, "detail": r.detail or ""} for r in result.results]
+    _emit(rows, "table")
+    ok = sum(r.status == "ok" for r in result.results)
+    print(f"\n{ok} of {len(result.results)} queries saved to {result.folder}", file=sys.stderr)
+    return 1 if result.failed else 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="foundry-finops", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -69,6 +120,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("tokens", help="token metrics per deployment")
     p.add_argument("account", nargs="?", default=account_default, help="Foundry resource name (or FINOPS_FOUNDRY_ACCOUNT)")
     p.add_argument("--hours", type=int, default=24)
+    p = sub.add_parser(
+        "download", help="save every query's JSON to FinOps/<today>/<query>.json",
+        description="Run every read query the SDK offers for a Foundry resource (optionally one project) over a date "
+                    "range and save each result as <query-name>.json in ./FinOps/<today>/, plus _manifest.json.",
+    )
+    p.add_argument("--account", default=account_default, help="Foundry resource name (or FINOPS_FOUNDRY_ACCOUNT)")
+    p.add_argument("--project", help="limit cost data to this Foundry project (billing tag `project`)")
+    p.add_argument("--start", type=_date, help="first day, YYYY-MM-DD")
+    p.add_argument("--end", type=_date, help="last day (inclusive), YYYY-MM-DD")
+    p.add_argument("--output-dir", default=".", help="where the FinOps folder is created (default: working directory)")
+    p.add_argument("--only", help="comma-separated query names to run (default: all)")
+    p.add_argument("--list", action="store_true", help="list the query names and exit")
+    p.add_argument("--location", default=os.environ.get("FINOPS_LOCATION", "eastus2"), help="region for quota and prices")
+    p.add_argument("--logs-target", default=os.environ.get("FINOPS_LOGS_TARGET", ""),
+                   help="Log Analytics workspace ID or App Insights resource ID, for the KQL queries")
+    p.add_argument("--apim-service", default=os.environ.get("FINOPS_APIM_SERVICE", ""),
+                   help="API Management instance, for the gateway query")
     sub.add_parser("budgets", help="Cost Management budgets")
     p = sub.add_parser("quota", help="regional model quota")
     p.add_argument("--location", default=os.environ.get("FINOPS_LOCATION", "eastus2"))
@@ -85,6 +153,19 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("days", "hours"):
         if getattr(args, name, 1) < 1:
             ap.error(f"--{name} must be at least 1")
+    if args.cmd == "download":
+        try:
+            return _download(ap, args)
+        except FinOpsError as exc:
+            lines = str(exc).splitlines() or [""]
+            print(f"error: {lines[0]}", file=sys.stderr)
+            if "access token" in lines[0]:
+                print("hint: sign in first (for example `az login`) or set the AZURE_* environment variables.",
+                      file=sys.stderr)
+            return 1
+        except (ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
 
     if args.demo:
         from .service import DemoService

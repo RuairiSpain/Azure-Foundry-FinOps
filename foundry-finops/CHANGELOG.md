@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- `foundry-finops download`: runs every read query the SDK offers (daily cost by project/agent/deployment/team/
+  model/meter, forecast, budgets, exports, cost controls with usage, deployments, token metrics, quota, tags,
+  alerts, API Management, retail prices and the saved KQL queries) for a start/end date and saves one JSON file per
+  query to `FinOps/<today>/<query>.json`, plus `_manifest.json` listing what succeeded, was skipped or failed.
+
 ## Unreleased – review fixes
 **Security / integration**
 - Credentials can no longer be sent to a non-ARM host: absolute URLs and `..` in caller-supplied scopes are

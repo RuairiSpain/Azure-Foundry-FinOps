@@ -107,7 +107,27 @@ illustrative data) used by the dashboard and the MCP connector. Try it without A
 ```bash
 foundry-finops --demo cost --by team
 foundry-finops --demo kql x "CostDaily | summarize Cost=sum(Cost) by Project | order by Cost desc"
+
+# Download everything for a project: one JSON file per query in ./FinOps/<today>/
+foundry-finops --subscription <id> -g rg-ai download --account contoso-foundry --project fraud-risk \
+    --start 2026-01-01 --end 2026-03-31
+foundry-finops download --list                       # the query names (= the file names)
+foundry-finops ... download ... --only cost_by_agent,budgets
 ```
+
+### What `download` saves
+
+* `FinOps/<today>/<query>.json` for each query, plus `_manifest.json` (parameters, and for every query: ok, skipped
+  with the reason, or failed with the error). The exit code is 1 if any query failed.
+* Cost data is billed cost per day, filtered to `--project` through Foundry's `project` billing tag (all projects
+  when omitted). Ranges longer than a year are fetched in several windows and merged.
+* Azure Monitor keeps 93 days of metrics, so older start dates are clamped (noted in the file). Metrics, quota,
+  deployments and prices exist per Foundry resource or region, not per project.
+* The KQL files need `--logs-target` and the gateway file needs `--apim-service` (or the `FINOPS_*` variables);
+  otherwise they are skipped.
+* Needs Cost Management Reader, Monitoring Reader and Reader on the resource group. If sign-in fails the command
+  stops at once instead of failing every query.
+* The folder holds billing data: it is listed in `.gitignore`; keep it out of source control.
 
 ## Example dashboard
 
