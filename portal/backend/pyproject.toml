@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "foundry-finops-portal"
+dynamic = ["version"]
+description = "Backend of the Foundry FinOps portal: Entra sign-in, scoped views of Foundry cost and usage, cost centres, notifications."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+  "foundry-finops>=0.2.0",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "PyJWT[crypto]>=2.8",
+  "msal>=1.30",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6", "mypy>=1.11", "types-requests"]
+
+[project.scripts]
+foundry-finops-portal = "foundry_finops_portal.__main__:main"
+
+[tool.hatch.version]
+path = "src/foundry_finops_portal/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/foundry_finops_portal"]
+# The built frontend (frontend/app/dist) is copied to src/foundry_finops_portal/static by deploy/package.sh
+artifacts = ["src/foundry_finops_portal/static/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 130
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["B008"]   # FastAPI's Depends() in defaults is the documented style
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "B017", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["msal.*", "jwt.*"]
+ignore_missing_imports = true
