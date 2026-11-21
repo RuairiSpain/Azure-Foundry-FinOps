@@ -101,3 +101,47 @@ class AllocateByUsageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UsageQueryTests(unittest.TestCase):
+    WORKSPACE = "11111111-2222-3333-4444-555555555555"
+    APP_INSIGHTS = "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Insights/components/ai"
+
+    def test_client_source_uses_the_table_names_of_the_target(self):
+        from foundry_finops import queries
+
+        classic = queries.usage_by_caller("client", self.APP_INSIGHTS)
+        workspace = queries.usage_by_caller("client", self.WORKSPACE)
+        self.assertIn("traces", classic)
+        self.assertIn('customDimensions["finops.caller_oid"]', classic)
+        self.assertIn("AppTraces", workspace)
+        self.assertIn('Properties["finops.caller_oid"]', workspace)
+        for q in (classic, workspace):                   # the same columns either way
+            self.assertIn("by oid, kind", q)
+
+    def test_gateway_source_joins_the_token_log_and_needs_a_workspace(self):
+        from foundry_finops import queries
+
+        q = queries.usage_by_caller("gateway", self.WORKSPACE)
+        self.assertIn("ApiManagementGatewayLlmLog", q)
+        self.assertIn("leftouter", q)                    # calls with no trace record stay, as unknown
+        self.assertIn('coalesce(kind, "unknown")', q)
+        with self.assertRaises(ValueError):
+            queries.usage_by_caller("gateway", self.APP_INSIGHTS)
+
+    def test_unknown_source_is_refused(self):
+        from foundry_finops import queries
+
+        with self.assertRaises(ValueError):
+            queries.usage_by_caller("spreadsheet", self.WORKSPACE)
+
+    def test_the_client_query_reads_the_fields_the_tracker_writes(self):
+        from foundry_finops import queries
+
+        tracker = UsageTracker(PriceSheet.from_mapping({"m": {"input": 1, "output": 1}}))
+        with finops_context(caller_oid="o1"):
+            rec = tracker.record({"model": "m", "usage": {"input_tokens": 10, "output_tokens": 0}})
+        self.assertEqual(rec.caller_type, "user")
+        q = queries.usage_by_caller("client", self.APP_INSIGHTS)
+        for key in ("finops.caller_oid", "finops.caller_type", "cost", "total_tokens"):
+            self.assertIn(f'"{key}"', q)

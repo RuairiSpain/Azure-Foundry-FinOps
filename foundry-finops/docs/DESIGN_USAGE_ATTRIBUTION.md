@@ -227,10 +227,12 @@ Built, with tests:
 | Portal schema 2 | `portal/backend` `db.py` | `department_map` and a dated `department_snapshot`. A version 1 database is upgraded in place. |
 | Portal split report | `GET /api/cost-centres/usage-split` | Administrators only. Department comes from Graph (`department` on the user) and is kept as a dated snapshot; people with no department are asked again on a later day. Department to cost centre mapping through `/api/cost-centres/department-map`. Returns unmapped departments and the coverage figure. |
 
+| Live reader | `queries.usage_by_caller`, `LiveBackend.usage_by_caller` | Reads per-caller usage from Log Analytics (`PORTAL_LOGS_TARGET`). Two sources: `client` (the SDK's `llm.usage` records; estimated cost; its fields are the ones the tracker writes, covered by a test) and `gateway` (policy trace records joined to the gateway LLM log by request ID; tokens only). **The gateway query is untested against a real instance**: table and column names come from Microsoft's documentation and must be checked. With no target configured the endpoint answers 501 and names the setting. Tests use a fake `kql`; nothing has run against Azure. |
+| Measure | `services.usage_split` | Estimated cost when the records carry it; tokens otherwise, and the report says which. Tokens ignore price differences between models. |
+
 Not built yet:
 
-- **Live per-caller usage in the portal.** The live backend raises a clear error and the endpoint answers 501. It needs the
-  per-call records written by the gateway policy, read from Log Analytics. Demo mode uses illustrative data.
+- **Bicep settings.** `PORTAL_LOGS_TARGET` and `PORTAL_USAGE_SOURCE` are set by hand (see `portal/docs/DEPLOY.md`).
 - **Pools.** The split uses the whole Foundry resource's cost. Pools of chosen agents, deployments and tools are not
   built.
 - **Idle capacity.** PTU cost with no per-call driver is not shown on its own line.

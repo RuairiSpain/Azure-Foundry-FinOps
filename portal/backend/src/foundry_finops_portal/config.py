@@ -30,6 +30,10 @@ class PortalSettings:
     location: str = "eastus2"
     apim_service: str = ""
     team_tag: str = "team"
+    #: Log Analytics workspace ID (or resource ID) holding the gateway's records; needed for per-caller usage.
+    logs_target: str = ""
+    #: ``gateway`` (API Management policy records, experimental) or ``client`` (``llm.usage`` records from the SDK).
+    usage_source: str = "gateway"
     # --- portal data
     db_path: str = "portal.db"
     #: Object IDs that are portal administrators from the first start (the rest is managed in the Admin page).
@@ -69,6 +73,7 @@ class PortalSettings:
             subscription_id=g("SUBSCRIPTION_ID"), resource_group=g("RESOURCE_GROUP"),
             foundry_account=g("FOUNDRY_ACCOUNT"), location=g("LOCATION", "eastus2"), apim_service=g("APIM_SERVICE"),
             team_tag=g("TEAM_TAG", "team"),
+            logs_target=g("LOGS_TARGET"), usage_source=g("USAGE_SOURCE", "gateway").lower(),
             db_path=g("DB_PATH", "portal.db"), bootstrap_admins=_list(g("ADMINS")),
             cors_origins=_list(g("CORS_ORIGINS")),
             alert_webhook_secret=g("ALERT_WEBHOOK_SECRET"),
@@ -83,6 +88,8 @@ class PortalSettings:
         """Refuse a configuration that would run without sign-in or without somewhere to read data from."""
         if self.mode not in ("demo", "entra"):
             raise ValueError("PORTAL_MODE must be 'demo' or 'entra'")
+        if self.usage_source not in ("gateway", "client"):
+            raise ValueError("PORTAL_USAGE_SOURCE must be 'gateway' or 'client'")
         if self.mode == "entra":
             missing = [n for n, v in (("PORTAL_TENANT_ID", self.tenant_id), ("PORTAL_CLIENT_ID", self.client_id),
                                        ("PORTAL_CLIENT_SECRET", self.client_secret),

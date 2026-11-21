@@ -53,6 +53,8 @@ class Settings:
     location: str = "eastus2"
     #: Log Analytics workspace ID (GUID) or Application Insights resource ID.
     logs_target: str = ""
+    #: Where per-caller usage comes from: ``gateway`` (the API Management policy's records) or ``client`` (``llm.usage``).
+    usage_source: str = "gateway"
     #: Cost Management tag that holds your team name.
     team_tag: str = "team"
     demo: bool = False
@@ -68,6 +70,7 @@ class Settings:
             apim_service=e("FINOPS_APIM_SERVICE", ""),
             location=e("FINOPS_LOCATION", "eastus2"),
             logs_target=e("FINOPS_LOGS_TARGET", ""),
+            usage_source=e("FINOPS_USAGE_SOURCE", "gateway").lower(),
             team_tag=e("FINOPS_TEAM_TAG", "team"),
             demo=e("FINOPS_DEMO", "").lower() in ("1", "true", "yes") or not e("FINOPS_SUBSCRIPTION_ID"),
             read_only=e("FINOPS_READ_ONLY", "").lower() in ("1", "true", "yes"),

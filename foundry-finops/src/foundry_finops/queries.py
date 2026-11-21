@@ -60,3 +60,70 @@ ALL = {
     "APIM token metrics by team": APIM_TOKENS_BY_DIMENSION,
     "Cost-control blocks": BUDGET_BLOCKS,
 }
+
+
+# --------------------------------------------------------------- usage by caller
+#: Sources of per-caller usage. ``client``: ``llm.usage`` records written by ``foundry_finops.tracing.UsageTracker``.
+#: ``gateway``: the per-call trace records of ``examples/apim/llm-caller-attribution.policy.xml`` joined to the gateway's
+#: token log by request ID.
+USAGE_SOURCES = ("client", "gateway")
+
+_USAGE_CLIENT_CLASSIC = """
+traces
+| where message == "llm.usage"
+| extend oid = tostring(customDimensions["finops.caller_oid"]),
+         kind = tostring(customDimensions["finops.caller_type"]),
+         cost = todouble(customDimensions["cost"]),
+         tokens = tolong(customDimensions["total_tokens"])
+| summarize cost = sum(cost), tokens = sum(tokens), calls = count() by oid, kind
+"""
+
+_USAGE_CLIENT_WORKSPACE = """
+AppTraces
+| where Message == "llm.usage"
+| extend oid = tostring(Properties["finops.caller_oid"]),
+         kind = tostring(Properties["finops.caller_type"]),
+         cost = todouble(Properties["cost"]),
+         tokens = tolong(Properties["total_tokens"])
+| summarize cost = sum(cost), tokens = sum(tokens), calls = count() by oid, kind
+"""
+
+#: UNTESTED against a live gateway: the table and column names are what Microsoft documents for the gateway's LLM log and
+#: Application Insights traces in a workspace, and must be checked on your instance. Tokens only: the gateway log has no
+#: price, so ``cost`` is null.
+_USAGE_GATEWAY_WORKSPACE = """
+let who = AppTraces
+    | where Message has "caller_oid"
+    | extend rec = parse_json(Message)
+    | where isnotempty(tostring(rec.request_id))
+    | project request_id = tostring(rec.request_id), oid = tostring(rec.caller_oid), kind = tostring(rec.caller_type);
+ApiManagementGatewayLlmLog
+| extend request_id = tostring(CorrelationId)
+| join kind=leftouter who on request_id
+| extend oid = coalesce(oid, ""), kind = coalesce(kind, "unknown")
+| summarize tokens = sum(tolong(TotalTokens)), calls = count() by oid, kind
+| extend cost = real(null)
+"""
+
+
+def is_app_insights_target(target: str) -> bool:
+    """True for an Application Insights resource ID (classic table names), false for a workspace ID or workspace resource ID."""
+    return "/microsoft.insights/components/" in target.lower()
+
+
+def usage_by_caller(source: str, target: str) -> str:
+    """KQL that returns one row per caller: ``oid, kind, cost, tokens, calls``. The time range goes in the request's timespan.
+
+    ``target`` is the ``logs_target`` the query will run against: an Application Insights resource ID uses the classic
+    table names, a Log Analytics workspace uses ``AppTraces``. The gateway source needs a workspace that holds both the
+    Application Insights traces and the gateway's LLM log.
+    """
+    if source not in USAGE_SOURCES:
+        raise ValueError(f"usage source must be one of {USAGE_SOURCES} (got {source!r})")
+    classic = is_app_insights_target(target)
+    if source == "client":
+        return (_USAGE_CLIENT_CLASSIC if classic else _USAGE_CLIENT_WORKSPACE).strip()
+    if classic:
+        raise ValueError("The gateway source joins the gateway's token log to the trace records, so it needs a Log Analytics "
+                         "workspace (a workspace ID or workspace resource ID), not an Application Insights resource ID")
+    return _USAGE_GATEWAY_WORKSPACE.strip()

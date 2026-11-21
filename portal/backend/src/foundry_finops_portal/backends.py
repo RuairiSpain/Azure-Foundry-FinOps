@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import timedelta
 from typing import Any, Protocol
 
-from foundry_finops import CostQuery, FinOpsClient
+from foundry_finops import CostQuery, FinOpsClient, queries
 from foundry_finops.demo import data as demo_data
 from foundry_finops.service import DemoService, LiveService, Settings
 
@@ -107,10 +107,30 @@ class LiveBackend(LiveService):
         return out
 
     def usage_by_caller(self, days: int) -> list[dict[str, Any]]:
-        """Per-caller usage needs the call records the gateway policy writes; this portal does not read them yet."""
-        raise NotImplementedError(
-            "Per-caller usage isn't connected in live mode yet. It needs the per-call records written by the gateway "
-            "policy in foundry-finops/examples/apim (see docs/DESIGN_USAGE_ATTRIBUTION.md).")
+        """Usage per caller over the last ``days`` days, read from Log Analytics (``PORTAL_LOGS_TARGET``).
+
+        One record per caller: ``caller_oid`` (empty when no identity was recorded), ``caller_type``, ``cost`` (estimated;
+        ``None`` for the gateway source, which has tokens only), ``tokens`` and ``calls``. Nothing is invented: when the
+        source isn't set up the method says what is missing.
+        """
+        target = self.settings.logs_target
+        if not target:
+            raise NotImplementedError(
+                "Per-caller usage isn't configured. Set PORTAL_LOGS_TARGET to the Log Analytics workspace that holds "
+                "the gateway's records (see foundry-finops/examples/apim and docs/DESIGN_USAGE_ATTRIBUTION.md).")
+        try:
+            query = queries.usage_by_caller(self.settings.usage_source, target)
+        except ValueError as exc:
+            raise NotImplementedError(str(exc)) from exc
+        table = self.kql(query, timespan=f"P{int(days)}D")
+        names = [c["name"] for c in table["columns"]]
+        out = []
+        for row in table["rows"]:
+            rec = dict(zip(names, row, strict=False))
+            out.append({"caller_oid": str(rec.get("oid") or ""), "caller_type": str(rec.get("kind") or "") or "unknown",
+                        "cost": None if rec.get("cost") is None else float(rec["cost"]),
+                        "tokens": int(rec.get("tokens") or 0), "calls": int(rec.get("calls") or 0)})
+        return out
 
     def policy_violations(self) -> list[dict[str, Any]]:
         try:
@@ -132,6 +152,7 @@ class BackendProvider:
         s = self.settings
         return Settings(subscription_id=s.subscription_id, resource_group=s.resource_group,
                         foundry_account=s.foundry_account, apim_service=s.apim_service, location=s.location,
+                        logs_target=s.logs_target, usage_source=s.usage_source,
                         team_tag=s.team_tag, demo=s.demo, read_only=s.read_only)
 
     def for_user(self, principal: Principal) -> Any:

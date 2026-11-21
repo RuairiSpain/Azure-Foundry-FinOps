@@ -67,17 +67,6 @@ def test_a_bad_mode_is_refused(client):
     assert client.get("/api/cost-centres/usage-split?unattributed=spread", headers=ALICE).status_code == 400
 
 
-def test_live_mode_says_what_is_missing_instead_of_inventing_numbers():
-    from foundry_finops_portal.backends import LiveBackend
-
-    try:
-        LiveBackend.usage_by_caller(object(), 30)  # type: ignore[arg-type]
-    except NotImplementedError as exc:
-        assert "gateway" in str(exc)
-    else:
-        raise AssertionError("live usage_by_caller should not return numbers it does not have")
-
-
 def test_the_department_is_kept_as_a_dated_snapshot(client, store):
     client.get("/api/cost-centres/usage-split", headers=ALICE)
     bob = "22222222-2222-2222-2222-222222222222"
@@ -105,3 +94,91 @@ def test_an_existing_version_1_database_gains_the_new_tables(tmp_path):
     store = Store(path)
     assert store.list_department_map() == []
     store.snapshot_departments("2026-11-21", {"o": "Risk"})
+
+
+# ---------------------------------------------------------------- the live reader
+class _Live:
+    """A LiveBackend that never touches Azure: only ``kql`` is replaced."""
+
+    def __init__(self, logs_target="11111111-2222-3333-4444-555555555555", usage_source="gateway", table=None):
+        from foundry_finops.service import Settings
+
+        from foundry_finops_portal.backends import LiveBackend
+
+        self.calls = []
+        live = object.__new__(LiveBackend)
+        live.settings = Settings(logs_target=logs_target, usage_source=usage_source)
+        live.kql = lambda query, timespan="P7D": (self.calls.append((query, timespan)) or table)  # type: ignore[method-assign]
+        self.backend = live
+
+
+GATEWAY_TABLE = {
+    "columns": [{"name": n, "type": "string"} for n in ("oid", "kind", "tokens", "calls", "cost")],
+    "rows": [["o1", "user", 900, 9, None], ["", "unknown", 100, 1, None]],
+}
+
+
+def test_the_live_reader_runs_the_gateway_query_and_shapes_the_rows():
+    live = _Live(table=GATEWAY_TABLE)
+    out = live.backend.usage_by_caller(30)
+    assert live.calls[0][1] == "P30D" and "ApiManagementGatewayLlmLog" in live.calls[0][0]
+    assert out == [
+        {"caller_oid": "o1", "caller_type": "user", "cost": None, "tokens": 900, "calls": 9},
+        {"caller_oid": "", "caller_type": "unknown", "cost": None, "tokens": 100, "calls": 1},
+    ]
+
+
+def test_the_live_reader_can_read_the_clients_records_instead():
+    table = {"columns": [{"name": n, "type": "string"} for n in ("oid", "kind", "cost", "tokens", "calls")],
+             "rows": [["o1", "user", 4.5, 300, 3]]}
+    live = _Live(logs_target="/subscriptions/s/resourceGroups/rg/providers/microsoft.insights/components/ai",
+                 usage_source="client", table=table)
+    assert live.backend.usage_by_caller(7) == [
+        {"caller_oid": "o1", "caller_type": "user", "cost": 4.5, "tokens": 300, "calls": 3}]
+    assert live.calls[0][1] == "P7D" and "finops.caller_oid" in live.calls[0][0]
+
+
+def test_the_live_reader_says_what_is_missing():
+    import pytest
+
+    with pytest.raises(NotImplementedError, match="PORTAL_LOGS_TARGET"):
+        _Live(logs_target="").backend.usage_by_caller(30)
+    with pytest.raises(NotImplementedError, match="workspace"):    # gateway source needs a workspace, not App Insights
+        _Live(logs_target="/subscriptions/s/resourceGroups/rg/providers/Microsoft.Insights/components/ai").backend.usage_by_caller(30)
+
+
+def test_a_missing_source_answers_501_with_the_reason(client, monkeypatch):
+    from foundry_finops_portal.backends import DemoBackend
+
+    def refuse(self, days):
+        raise NotImplementedError("Per-caller usage isn't configured. Set PORTAL_LOGS_TARGET")
+
+    monkeypatch.setattr(DemoBackend, "usage_by_caller", refuse)
+    r = client.get("/api/cost-centres/usage-split", headers=ALICE)
+    assert r.status_code == 501 and "PORTAL_LOGS_TARGET" in r.json()["detail"]
+
+
+def test_token_only_records_are_split_by_tokens_and_the_report_says_so(client, monkeypatch):
+    from foundry_finops_portal.backends import DemoBackend
+
+    records = [
+        {"caller_oid": "22222222-2222-2222-2222-222222222222", "caller_type": "user", "cost": None, "tokens": 900, "calls": 9},
+        {"caller_oid": "33333333-3333-3333-3333-333333333333", "caller_type": "user", "cost": None, "tokens": 100, "calls": 1},
+    ]
+    monkeypatch.setattr(DemoBackend, "usage_by_caller", lambda self, days: records)
+    report = client.get("/api/cost-centres/usage-split", headers=ALICE).json()
+    assert report["measure"] == "tokens" and "tokens" in report["note"]
+    by = rows_by_code(report)
+    assert round(by["CC-RISK"] / report["total"], 2) == 0.9 and round(by["CC-SUP"] / report["total"], 2) == 0.1
+    assert report["coverage_percent"] == 100.0
+
+
+def test_usage_source_must_be_known():
+    import pytest
+
+    from foundry_finops_portal import PortalSettings
+
+    PortalSettings(mode="demo", usage_source="client").validate()
+    with pytest.raises(ValueError, match="PORTAL_USAGE_SOURCE"):
+        PortalSettings(mode="demo", usage_source="spreadsheet").validate()
+    assert PortalSettings.from_env({"PORTAL_LOGS_TARGET": "w", "PORTAL_USAGE_SOURCE": "CLIENT"}).usage_source == "client"

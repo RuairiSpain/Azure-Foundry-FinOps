@@ -394,6 +394,9 @@ class Views:
         except NotImplementedError as exc:
             raise HTTPException(501, str(exc)) from exc
         total = round(sum(self._values_by_basis("project", days, None).values()), 2)
+        # Estimated cost when the records carry it; tokens otherwise (the gateway log has no price). Tokens ignore the
+        # price difference between models, so the report says which measure it used.
+        measure = "cost" if sum(float(r.get("cost") or 0) for r in records) > 0 else "tokens"
         if not records or total <= 0:
             raise HTTPException(404, "There is no usage in this period to split")
 
@@ -409,23 +412,29 @@ class Views:
         for r in records:
             oid = str(r.get("caller_oid") or "")
             if oid and resolve(oid) is None:
-                unmapped[departments.get(oid) or "(no department)"] += float(r.get("cost") or 0)
+                unmapped[departments.get(oid) or "(no department)"] += float(r.get(measure) or 0)
 
-        result = allocate_by_usage(total, records, resolve, unattributed=unattributed)
+        try:
+            result = allocate_by_usage(total, records, resolve, measure=measure, unattributed=unattributed)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
         names = {cc["code"]: cc["name"] for cc in centres.values()}
+        weighted = "estimated cost" if measure == "cost" else "tokens (which ignore price differences between models)"
+        spread = ("spread over the cost centres in proportion to their usage." if unattributed == "proportional"
+                  else "shown on their own row.")
+        note = (f"An allocation, not billed cost, weighted by recorded {weighted}. The pool is the whole Foundry "
+                "resource's cost. Each cost centre gets the share of recorded usage made by people whose department is "
+                "mapped to it. Calls with no caller identity, and people whose department has no cost centre, are "
+                f"unattributed: {spread}")
         rows = [{"code": r["key"], "name": names.get(r["key"], "Usage with no cost centre"),
                  "allocated": r["allocated"], "share_percent": r["share_percent"]} for r in result["rows"]]
         return {
-            "days": days, "currency": "USD", "total": total, "mode": result["mode"],
+            "days": days, "currency": "USD", "total": total, "mode": result["mode"], "measure": measure,
             "coverage_percent": result["coverage_percent"], "unattributed_percent": result["unattributed_percent"],
             "rows": rows, "unattributed_code": UNATTRIBUTED,
-            "unmapped_departments": [{"department": d, "usage_cost": round(c, 2)}
+            "unmapped_departments": [{"department": d, "usage": round(c, 2)}
                                      for d, c in sorted(unmapped.items(), key=lambda kv: -kv[1])],
-            "note": "An allocation, not billed cost. The pool is the whole Foundry resource's cost. Each cost centre gets "
-                    "the share of recorded usage made by people whose department is mapped to it. Calls with no caller "
-                    "identity, and people whose department has no cost centre, are unattributed: "
-                    + ("spread over the cost centres in proportion to their usage." if unattributed == "proportional"
-                       else "shown on their own row."),
+            "note": note,
         }
 
     def _departments(self, oids: set[str], directory: Directory | None) -> dict[str, str]:

@@ -55,6 +55,13 @@ ApiManagementGatewayLlmLog
 
 Rows with no matching trace record are calls that bypassed the policy; count them as `unknown`, not as an error.
 
+## Reading it from the portal
+
+The portal's live reader (`LiveBackend.usage_by_caller`, `foundry_finops.queries.usage_by_caller`) runs the join above
+against `PORTAL_LOGS_TARGET` and feeds `GET /api/cost-centres/usage-split`. It is tokens only for this source. It has the
+same untested status as the policy: it needs a Log Analytics workspace that holds both the Application Insights traces
+and the gateway LLM log.
+
 ## Open checks before production
 
 - The `validate-jwt` claim expressions return the right values for your token versions (v1 or v2).
