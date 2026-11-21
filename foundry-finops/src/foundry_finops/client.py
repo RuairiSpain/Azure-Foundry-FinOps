@@ -13,6 +13,7 @@ from ._transport import RetryPolicy, Transport
 from .operations import (
     AlertOperations,
     ApimOperations,
+    AuthorizationOperations,
     CostControlOperations,
     CostManagementOperations,
     FoundryOperations,
@@ -60,6 +61,7 @@ class FinOpsClient:
     ``alerts``             Metric alerts, log alerts, action groups
     ``apim``               APIM products, subscriptions, token-limit/metric policies
     ``pricing``            Retail prices and token cost estimates
+    ``authorization``      The signed-in identity's role assignments and role definitions
     =====================  ==========================================================
     """
 
@@ -132,6 +134,10 @@ class FinOpsClient:
     @cached_property
     def apim(self) -> ApimOperations:
         return self._ops(ApimOperations)  # type: ignore[no-any-return]
+
+    @cached_property
+    def authorization(self) -> AuthorizationOperations:
+        return self._ops(AuthorizationOperations)  # type: ignore[no-any-return]
 
     @cached_property
     def pricing(self) -> PricingOperations:

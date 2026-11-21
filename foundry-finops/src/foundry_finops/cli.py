@@ -64,12 +64,13 @@ def _date(value: str) -> date:
 def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     from .export import QUERIES, ExportContext, allowed_by_roles, known_role_names, parse_roles, run_export
 
-    roles = parse_roles(args.roles) if args.roles is not None else None
+    auto = args.roles is not None and args.roles.strip().lower() == "auto"
+    roles = None if (auto or args.roles is None) else parse_roles(args.roles)
     if roles:
         unknown = [r for r in roles if r.lower() not in known_role_names()]
         if unknown:  # a typo here would silently skip queries, so say so
             print(f"warning: not a role this tool recognises (ignored): {', '.join(unknown)}", file=sys.stderr)
-    if args.list:
+    if args.list and not auto:
         for q in QUERIES:
             mark = "" if roles is None else ("run   " if allowed_by_roles(q, roles) else "skip  ")
             print(f"{mark}{q.name:42} {q.description}")
@@ -82,10 +83,11 @@ def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         ap.error("download: pass --account (or set FINOPS_FOUNDRY_ACCOUNT)")
     if not args.resource_group:
         ap.error("download: pass -g/--resource-group (or set FINOPS_RESOURCE_GROUP): the Foundry resource lives in it")
-    if not args.start or not args.end:
-        ap.error("download: --start and --end are required (YYYY-MM-DD)")
-    if args.end < args.start:
-        ap.error("--end must not be before --start")
+    if not args.list:
+        if not args.start or not args.end:
+            ap.error("download: --start and --end are required (YYYY-MM-DD)")
+        if args.end < args.start:
+            ap.error("--end must not be before --start")
     from .service import LiveService, Settings
 
     team_tag = os.environ.get("FINOPS_TEAM_TAG", "team")
@@ -94,12 +96,17 @@ def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         apim_service=args.apim_service, location=args.location, logs_target=args.logs_target, team_tag=team_tag,
     ))
     try:
+        access = _discover_access(svc, args) if auto else None
+        if args.list and access is not None:
+            for q in QUERIES:
+                print(f"{'run   ' if access.check(q.name) is None else 'skip  '}{q.name:42} {q.description}")
+            return 0
         ctx = ExportContext(
             client=svc.fo, service=svc, account=args.account, start=args.start, end=args.end, project=args.project,
             location=args.location, logs_target=args.logs_target, apim_service=args.apim_service, team_tag=team_tag,
         )
         only = [n.strip() for n in args.only.split(",") if n.strip()] if args.only else None
-        result = run_export(ctx, Path(args.output_dir), only, roles)
+        result = run_export(ctx, Path(args.output_dir), only, roles, access)
     finally:
         svc.fo.close()
     rows = [{"query": r.name, "status": r.status, "rows": r.rows, "detail": r.detail or ""} for r in result.results]
@@ -107,6 +114,30 @@ def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     ok = sum(r.status == "ok" for r in result.results)
     print(f"\n{ok} of {len(result.results)} queries saved to {result.folder}", file=sys.stderr)
     return 1 if result.failed else 0
+
+
+def _discover_access(svc: Any, args: argparse.Namespace) -> Any:
+    """``--roles auto``: read the signed-in identity's real role assignments from Azure."""
+    from .roles import discover, summarize
+
+    fo = svc.fo
+    sub = f"/subscriptions/{args.subscription}"
+    scopes = {
+        "subscription": sub,
+        "resource_group": fo.cost.resource_group_scope(),
+        "account": fo.foundry.account_id(args.account),
+        "apim": fo.apim.service_id(args.apim_service) if args.apim_service else fo.cost.resource_group_scope(),
+        "anywhere": sub,
+    }
+    access = discover(fo, scopes)
+    if access.grants:
+        print("Roles found for the signed-in identity:", file=sys.stderr)
+        for line in summarize(access.grants):
+            print(f"  {line}", file=sys.stderr)
+    else:
+        print("warning: no role assignments found for the signed-in identity; only the public queries will run",
+              file=sys.stderr)
+    return access
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -139,8 +170,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--end", type=_date, help="last day (inclusive), YYYY-MM-DD")
     p.add_argument("--output-dir", default=".", help="where the FinOps folder is created (default: working directory)")
     p.add_argument("--only", help="comma-separated query names to run (default: all)")
-    p.add_argument("--roles", help="the identity's Azure roles, comma-separated (e.g. 'Reader,Monitoring Reader'): "
-                                   "only the queries those roles allow are run. Default: try everything")
+    p.add_argument("--roles", help="the identity's Azure roles, comma-separated (e.g. 'Reader,Monitoring Reader'), or "
+                                   "'auto' to read them from Azure: only the queries those roles allow are run. "
+                                   "Default: try everything")
     p.add_argument("--list", action="store_true", help="list the query names and exit")
     p.add_argument("--location", default=os.environ.get("FINOPS_LOCATION", "eastus2"), help="region for quota and prices")
     p.add_argument("--logs-target", default=os.environ.get("FINOPS_LOGS_TARGET", ""),

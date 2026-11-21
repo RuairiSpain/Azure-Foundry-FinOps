@@ -365,14 +365,33 @@ class ExportResult:
         return [r for r in self.results if r.status == "failed"]
 
 
+class NamedRoles:
+    """Access from role *names* the caller typed (``--roles "Reader,Monitoring Reader"``)."""
+
+    def __init__(self, roles: list[str]) -> None:
+        self.roles = roles
+
+    def check(self, query_name: str) -> str | None:
+        query = next(q for q in QUERIES if q.name == query_name)
+        if allowed_by_roles(query, self.roles):
+            return None
+        return f"not allowed by the roles given ({_needs_text(query)})"
+
+    def describe(self) -> list[str]:
+        return self.roles
+
+
 def run_export(
-    ctx: ExportContext, output_dir: Path, only: list[str] | None = None, roles: list[str] | None = None
+    ctx: ExportContext, output_dir: Path, only: list[str] | None = None, roles: list[str] | None = None,
+    access: Any = None,
 ) -> ExportResult:
     """Run the selected queries and write one JSON file each under ``<output_dir>/FinOps/<today>/``.
 
-    ``roles`` limits the download to the queries those Azure roles allow; the rest are recorded as skipped.
-    ``None`` tries everything.
+    ``roles`` (role names) or ``access`` (a :class:`~foundry_finops.roles.RoleAccess` read from Azure) limit the
+    download to the queries those roles allow; the rest are recorded as skipped. With neither, everything is tried.
     """
+    if access is None and roles is not None:
+        access = NamedRoles(roles)
     selected = QUERIES
     if only:
         unknown = [n for n in only if n not in NAMES]
@@ -387,14 +406,17 @@ def run_export(
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     params = {"account": ctx.account, "project": ctx.project, "start": ctx.start.isoformat(),
               "end": ctx.end.isoformat(), "subscription_id": ctx.client.subscription_id,
-              "resource_group": ctx.client.resource_group, "location": ctx.location, "roles": roles}
+              "resource_group": ctx.client.resource_group, "location": ctx.location,
+              "roles": None if access is None else ("auto" if hasattr(access, "grants") else roles)}
+    if access is not None and hasattr(access, "grants"):
+        params["discovered_roles"] = access.describe()
     results: list[QueryResult] = []
     for q in selected:
         began = time.monotonic()
         res = QueryResult(q.name, "ok")
         try:
-            if not allowed_by_roles(q, roles):
-                raise QuerySkipped(f"not allowed by the roles given ({_needs_text(q)})")
+            if access is not None and (reason := access.check(q.name)):
+                raise QuerySkipped(reason)
             for need in q.needs:
                 if not getattr(ctx, need):
                     flag = need.replace("_", "-")

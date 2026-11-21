@@ -112,8 +112,8 @@ foundry-finops download --start 2026-03-01 --end 2026-03-31 --only cost_by_agent
 | `--start`, `--end` | First and last day, inclusive, `YYYY-MM-DD`. Required. |
 | `--project` | Filter cost data to one Foundry project. Omit for all projects. |
 | `--only a,b` | Run only these queries. Names come from `--list`. |
-| `--roles "A,B"` | The identity's Azure roles, comma-separated. Only the queries those roles allow are run (see below). Default: try everything. |
-| `--list` | Print the query names and exit. With `--roles`, each line starts with `run` or `skip`, so it is a dry run. |
+| `--roles "A,B"` | The identity's Azure roles, comma-separated, or `auto` to read them from Azure. Only the queries those roles allow are run (see below). Default: try everything. |
+| `--list` | Print the query names and exit. With `--roles`, each line starts with `run` or `skip`, so it is a dry run (`--roles auto` signs in to Azure to read the roles). |
 | `--output-dir` | Where the `FinOps` folder is created. Default: the current directory. |
 
 The global options `--subscription` and `-g` go **before** `download`.
@@ -138,8 +138,31 @@ foundry-finops download --list --roles "Monitoring Reader"        # shows which 
 * The command assumes the roles are held at a scope that covers the resource (the subscription for `quota_*`,
   `foundry_event_grid_topics` and the tag inventory). It does not look up the real assignments, so it can't know if
   a role is held only on a resource group. Anything still refused by Azure is recorded as `failed` with the 403.
-* A role name the tool doesn't know, including a custom role, is reported as a warning and ignored. Custom roles
-  need to be passed as the built-in roles that cover the same permissions.
+* A role name the tool doesn't know, including a custom role, is reported as a warning and ignored. For custom roles
+  use `--roles auto`, which works from permissions instead of names.
+
+**Reading the roles from Azure: `--roles auto`.** Instead of typing roles, let the command look them up:
+
+```bash
+foundry-finops download --start 2026-01-01 --end 2026-03-31 --roles auto
+foundry-finops download --list --roles auto          # dry run: which queries would run
+```
+
+It reads the signed-in identity's role assignments (including roles inherited through groups) and the permissions of
+each role, then runs a query only if those permissions allow the actions it needs **at the scope it runs at**. A Monitoring
+Reader assignment on the resource group allows the token metrics for the Foundry resource inside it, but a Reader
+assignment on a different resource group allows nothing. This is more precise than `--roles "..."`: it handles custom
+roles, `notActions`, and scope. The roles found are printed and saved in `_manifest.json` under `discovered_roles`.
+
+* The identity needs `Microsoft.Authorization/roleAssignments/read` and `roleDefinitions/read`. **Reader** has both. If
+  they are missing the command stops with a message and you can pass `--roles "..."` yourself.
+* The identity is taken from the `oid` claim of its own access token, so it works for users, service principals and
+  managed identities.
+* It is a pre-check, not a security boundary: Azure still decides. It does not model deny assignments, conditional
+  (ABAC) assignments, or Privileged Identity Management roles that are eligible but not yet activated; those queries
+  are still recorded as `failed` with Azure's 403 if the guess is wrong. The action names each query needs are in
+  `foundry_finops/roles.py` and are my reading of the Azure resource provider operations, so please report any that are
+  wrong.
 
 Running it twice on the same day overwrites that day's files. Running it on another day creates a new dated folder.
 

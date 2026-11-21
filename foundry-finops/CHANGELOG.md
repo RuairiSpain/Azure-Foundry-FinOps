@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- `foundry-finops download --roles auto` reads the signed-in identity's role assignments and role definitions from
+  Azure and runs only the queries its permissions allow at the scope each query uses (custom roles, `notActions`,
+  group-inherited roles and management-group assignments included). New `fo.authorization` operations and
+  `foundry_finops.roles`.
 - `foundry-finops download --roles "Reader,Monitoring Reader"` limits the download to the queries those Azure roles
   allow and records the others as skipped with the roles that would allow them. Without the switch everything is
   tried. `download --list --roles ...` is a dry run.

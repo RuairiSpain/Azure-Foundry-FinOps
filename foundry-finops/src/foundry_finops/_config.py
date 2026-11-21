@@ -66,6 +66,8 @@ class ApiVersions:
     metric_alerts: str = "2018-03-01"
     action_groups: str = "2023-01-01"
     scheduled_query_rules: str = "2023-12-01"
+    #: Microsoft.Authorization role assignments and role definitions.
+    authorization: str = "2022-04-01"
     #: Microsoft.Resources tags.
     tags: str = "2021-04-01"
     resources: str = "2021-04-01"
