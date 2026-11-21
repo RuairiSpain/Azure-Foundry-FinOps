@@ -118,6 +118,13 @@ the package with `scripts/configure_plugin.py` as described in `foundry-finops-c
 `models.py` if it returns structured data, and the API version to `ApiVersions` in `_config.py` so users can override it.
 Use `self._list` for paged results.
 
+## Dependency updates
+
+Dependabot (`.github/dependabot.yml`) opens weekly pull requests for GitHub Actions, the SDK's Python dependencies, the
+connector's `requirements.txt` and the connector's base image. Related packages are grouped into one pull request, so
+review it like any other change: CI must pass, and read the release notes of anything that jumps a major version. A new
+Python major or minor version is not updated automatically; change it together with the CI matrix.
+
 ## Releasing
 
 Maintainers only.

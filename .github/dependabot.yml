@@ -1,0 +1,67 @@
+# Weekly dependency update pull requests. Each one runs the normal CI checks (ci.yml).
+version: 2
+
+updates:
+  # GitHub Actions used by the workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  # SDK: runtime dependencies and the optional extras in foundry-finops/pyproject.toml
+  - package-ecosystem: pip
+    directory: /foundry-finops
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    groups:
+      azure:
+        patterns: ["azure-*"]
+      opentelemetry:
+        patterns: ["opentelemetry-*"]
+      dev-tools:
+        patterns: ["pytest*", "ruff", "mypy", "types-*", "build", "twine"]
+    commit-message:
+      prefix: "deps"
+
+  # MCP connector: requirements.txt used by the container image
+  - package-ecosystem: pip
+    directory: /foundry-finops-cowork/mcp_server
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: foundry-finops   # this repository's own SDK, not published to PyPI yet
+    groups:
+      azure:
+        patterns: ["azure-*"]
+    commit-message:
+      prefix: "deps"
+
+  # Base image of the connector's container
+  - package-ecosystem: docker
+    directory: /foundry-finops-cowork
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major"]   # move Python versions on purpose, with the CI matrix
+    commit-message:
+      prefix: "deps"
