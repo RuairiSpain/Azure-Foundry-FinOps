@@ -115,11 +115,13 @@ class ExportTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     def test_list_and_argument_errors(self):
         self.assertEqual(main(["download", "--list"]), 0)
-        base = ["--subscription", "s", "download", "--account", "a"]
+        base = ["--subscription", "s", "-g", "rg", "download", "--account", "a"]
         for argv in (["--demo", "download", "--account", "a", "--start", "2026-01-01", "--end", "2026-01-02"],
                      [*base, "--start", "2026-01-01"],
                      [*base, "--start", "2026-02-01", "--end", "2026-01-01"],
-                     [*base, "--start", "01/01/2026", "--end", "2026-01-02"]):
+                     [*base, "--start", "01/01/2026", "--end", "2026-01-02"],
+                     ["--subscription", "s", "download", "--account", "a", "--start", "2026-01-01",
+                      "--end", "2026-01-02"]):  # no resource group
             with self.subTest(argv=argv), self.assertRaises(SystemExit) as cm:
                 main(argv)
             self.assertEqual(cm.exception.code, 2)

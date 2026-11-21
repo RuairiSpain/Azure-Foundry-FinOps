@@ -74,6 +74,8 @@ def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         ap.error("--subscription (or FINOPS_SUBSCRIPTION_ID) is required")
     if not args.account:
         ap.error("download: pass --account (or set FINOPS_FOUNDRY_ACCOUNT)")
+    if not args.resource_group:
+        ap.error("download: pass -g/--resource-group (or set FINOPS_RESOURCE_GROUP): the Foundry resource lives in it")
     if not args.start or not args.end:
         ap.error("download: --start and --end are required (YYYY-MM-DD)")
     if args.end < args.start:
