@@ -171,3 +171,40 @@ The folder contains billing data and is in this repository's `.gitignore`. Keep 
 | `kql_*` or `apim_gateway` are `skipped` | Pass `--logs-target` or `--apim-service`. |
 | `cost_controls` fails with 403 | Cost controls are a preview API. Add a Foundry role such as Foundry User on the resource. |
 | A line break breaks the command in PowerShell | Use a backtick `` ` `` at the end of the line instead of `\`. |
+
+## 10. Scheduling in GitHub Actions
+
+`.github/workflows/finops-download.yml` runs the download every Monday at 05:17 UTC for the last 30 full days, and can
+also be started by hand (Actions > finops-download > Run workflow) with your own start, end, project and query list.
+It signs in to Azure with OpenID Connect, so no password or client secret is stored in GitHub.
+
+**One-time setup**
+
+1. Create an app registration (or user-assigned managed identity) and give it the roles from step 4 on the
+   subscription.
+2. Add a **federated credential** to it: issuer `https://token.actions.githubusercontent.com`, subject
+   `repo:RuairiSpain/Azure-Foundry-FinOps:environment:finops` (change the owner and repo if you forked it).
+3. In the repository go to Settings > Secrets and variables > Actions > **Variables** and add:
+
+| Variable | Required | Value |
+|---|---|---|
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | yes | From the app registration and subscription |
+| `FINOPS_RESOURCE_GROUP`, `FINOPS_FOUNDRY_ACCOUNT` | yes | As in step 5 |
+| `FINOPS_PROJECT` | no | Filter cost data to one project; leave out for all |
+| `FINOPS_LOCATION`, `FINOPS_TEAM_TAG` | no | Default `eastus2` and `team` |
+| `FINOPS_LOGS_TARGET`, `FINOPS_APIM_SERVICE` | no | Turn on the KQL and gateway files |
+| `FINOPS_STORAGE_ACCOUNT`, `FINOPS_STORAGE_CONTAINER` | see below | Where to save the files (container default `finops`) |
+
+4. Optional: in Settings > Environments > **finops**, add required reviewers if a person should approve each run.
+
+**Where the files go.** The output is billing data, so the workflow refuses to keep it where it could be read publicly:
+
+* **Private repository:** the `FinOps` folder is attached to the run as a workflow artifact for 30 days.
+* **Azure Blob Storage** (works for public repositories too): set `FINOPS_STORAGE_ACCOUNT` and give the identity
+  **Storage Blob Data Contributor** on the container. Files are uploaded as `<container>/<date>/<query>.json`.
+* A **public** repository with no storage account fails at the first step with an explanation, before anything is
+  downloaded.
+
+Each run also writes a table of every query's status to the run summary. The job fails if any query failed (exit code 1),
+after the files for the queries that worked have been saved. To change the schedule, edit the `cron` line.
+

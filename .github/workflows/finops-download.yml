@@ -1,0 +1,144 @@
+name: finops-download
+
+# Scheduled `foundry-finops download`. Setup: foundry-finops/docs/SETUP.md ("Scheduling in GitHub Actions").
+# Signs in to Azure with OpenID Connect (no stored secret) and saves FinOps/<date>/<query>.json.
+on:
+  schedule:
+    - cron: "17 5 * * 1"          # Mondays 05:17 UTC; covers the last 30 full days
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "First day, YYYY-MM-DD (default: 30 days before the end date)"
+        required: false
+      end:
+        description: "Last day, YYYY-MM-DD (default: yesterday, UTC)"
+        required: false
+      project:
+        description: "Foundry project to filter cost data to (default: the FINOPS_PROJECT variable, else all projects)"
+        required: false
+      only:
+        description: "Comma-separated query names to run (default: all)"
+        required: false
+
+permissions:
+  id-token: write   # OIDC token for azure/login
+  contents: read
+
+concurrency:
+  group: finops-download
+  cancel-in-progress: false
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # The environment name is part of the federated credential's subject: repo:<owner>/<repo>:environment:finops
+    environment: finops
+    env:
+      FINOPS_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      FINOPS_RESOURCE_GROUP: ${{ vars.FINOPS_RESOURCE_GROUP }}
+      FINOPS_FOUNDRY_ACCOUNT: ${{ vars.FINOPS_FOUNDRY_ACCOUNT }}
+      FINOPS_LOCATION: ${{ vars.FINOPS_LOCATION || 'eastus2' }}
+      FINOPS_LOGS_TARGET: ${{ vars.FINOPS_LOGS_TARGET }}
+      FINOPS_APIM_SERVICE: ${{ vars.FINOPS_APIM_SERVICE }}
+      FINOPS_TEAM_TAG: ${{ vars.FINOPS_TEAM_TAG || 'team' }}
+      STORAGE_ACCOUNT: ${{ vars.FINOPS_STORAGE_ACCOUNT }}
+      STORAGE_CONTAINER: ${{ vars.FINOPS_STORAGE_CONTAINER || 'finops' }}
+    steps:
+      - name: Check configuration
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          missing=""
+          for v in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID FINOPS_RESOURCE_GROUP FINOPS_FOUNDRY_ACCOUNT; do
+            case "$v" in
+              AZURE_CLIENT_ID) val="${{ vars.AZURE_CLIENT_ID }}" ;;
+              AZURE_TENANT_ID) val="${{ vars.AZURE_TENANT_ID }}" ;;
+              AZURE_SUBSCRIPTION_ID) val="${{ vars.AZURE_SUBSCRIPTION_ID }}" ;;
+              FINOPS_RESOURCE_GROUP) val="${{ vars.FINOPS_RESOURCE_GROUP }}" ;;
+              FINOPS_FOUNDRY_ACCOUNT) val="${{ vars.FINOPS_FOUNDRY_ACCOUNT }}" ;;
+            esac
+            [ -n "$val" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Set these repository (or environment) variables:$missing"
+            exit 1
+          fi
+          # The output is billing data. A public repository's artifacts are readable by anyone signed in to GitHub,
+          # so there it may only go to your own storage account.
+          if [ "$REPO_PRIVATE" != "true" ] && [ -z "$STORAGE_ACCOUNT" ]; then
+            echo "::error::This repository is public, so the download can't be kept as a workflow artifact. Set the FINOPS_STORAGE_ACCOUNT variable to save it to Azure Blob Storage instead."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install ./foundry-finops
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Download
+        id: download
+        env:
+          IN_START: ${{ inputs.start }}
+          IN_END: ${{ inputs.end }}
+          IN_PROJECT: ${{ inputs.project || vars.FINOPS_PROJECT }}
+          IN_ONLY: ${{ inputs.only }}
+        run: |
+          end="${IN_END:-$(date -u -d yesterday +%F)}"
+          start="${IN_START:-$(date -u -d "$end - 29 days" +%F)}"
+          args=(download --start "$start" --end "$end")
+          [ -n "$IN_PROJECT" ] && args+=(--project "$IN_PROJECT")
+          [ -n "$IN_ONLY" ] && args+=(--only "$IN_ONLY")
+          echo "Range: $start to $end"
+          set +e
+          foundry-finops "${args[@]}"
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, json
+          files = sorted(glob.glob("FinOps/*/_manifest.json"))
+          if not files:
+              print("No manifest was written; see the download step log.")
+          for f in files:
+              m = json.load(open(f))
+              p = m["parameters"]
+              print(f"### {f.split('/')[1]}: {p['start']} to {p['end']}"
+                    + (f" (project `{p['project']}`)" if p.get("project") else ""))
+              print("\n| Query | Status | Rows | Detail |\n|---|---|---|---|")
+              for q in m["queries"]:
+                  print(f"| {q['name']} | {q['status']} | {q['rows'] if q['rows'] is not None else ''} "
+                        f"| {(q['detail'] or '').replace('|', '/')[:120]} |")
+          PY
+
+      - name: Upload to Azure Blob Storage
+        if: ${{ always() && env.STORAGE_ACCOUNT != '' && hashFiles('FinOps/**') != '' }}
+        run: |
+          az storage blob upload-batch --auth-mode login --account-name "$STORAGE_ACCOUNT" \
+            --destination "$STORAGE_CONTAINER" --source FinOps --overwrite
+
+      - name: Keep as a workflow artifact (private repositories only)
+        if: ${{ always() && github.event.repository.private }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: finops-${{ github.run_id }}
+          path: FinOps/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Fail if any query failed
+        if: ${{ steps.download.outputs.exit_code != '0' }}
+        run: |
+          echo "::error::foundry-finops download exited with code ${{ steps.download.outputs.exit_code }} (1 = some queries failed, 2 = invalid arguments). See the summary."
+          exit 1
