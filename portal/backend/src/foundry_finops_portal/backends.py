@@ -39,11 +39,29 @@ class Backend(Protocol):
     def list_quota(self) -> list[dict[str, Any]]: ...
     def list_projects(self) -> list[dict[str, Any]]: ...
     def cost_by_project_agent(self, days: int) -> list[dict[str, Any]]: ...
+    def usage_by_caller(self, days: int) -> list[dict[str, Any]]: ...
     def policy_violations(self) -> list[dict[str, Any]]: ...
+
+
+#: Illustrative: who made the calls, as a share of all demo cost. The last two are not in the demo directory (a stranger)
+#: and carry no identity at all, so the demo shows both kinds of unattributed usage.
+DEMO_CALLERS: tuple[tuple[str, str, float], ...] = (
+    ("22222222-2222-2222-2222-222222222222", "user", 0.30),    # Bob, Risk
+    ("33333333-3333-3333-3333-333333333333", "user", 0.25),    # Carol, Support
+    ("55555555-5555-5555-5555-555555555555", "user", 0.10),    # Erin, Finance (no cost centre mapped)
+    ("11111111-1111-1111-1111-111111111111", "agent", 0.05),   # Alice's platform agent identity
+    ("99999999-9999-9999-9999-999999999999", "user", 0.10),    # not in the directory
+    ("", "unknown", 0.20),                                      # no identity recorded
+)
 
 
 class DemoBackend(DemoService):
     """Illustrative data. Writes change the in-memory demo store."""
+
+    def usage_by_caller(self, days: int) -> list[dict[str, Any]]:
+        total = sum(r["cost"] for r in self.cost_by_project_agent(days))
+        return [{"caller_oid": oid, "caller_type": kind, "cost": round(total * share, 4)}
+                for oid, kind, share in DEMO_CALLERS]
 
     def list_projects(self) -> list[dict[str, Any]]:
         return [{"name": n, "display_name": n, "team": m["team"]} for n, m in demo_data.PROJECTS.items()]
@@ -87,6 +105,12 @@ class LiveBackend(LiveService):
             out.append({"project": tags.get("project", "") or "(untagged)", "agent": tags.get("agent.name", ""),
                         "cost": round(float(rec.get("Cost") or rec.get("PreTaxCost") or 0), 4)})
         return out
+
+    def usage_by_caller(self, days: int) -> list[dict[str, Any]]:
+        """Per-caller usage needs the call records the gateway policy writes; this portal does not read them yet."""
+        raise NotImplementedError(
+            "Per-caller usage isn't connected in live mode yet. It needs the per-call records written by the gateway "
+            "policy in foundry-finops/examples/apim (see docs/DESIGN_USAGE_ATTRIBUTION.md).")
 
     def policy_violations(self) -> list[dict[str, Any]]:
         try:

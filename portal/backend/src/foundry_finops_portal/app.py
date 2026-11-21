@@ -73,6 +73,11 @@ class RuleIn(BaseModel):
     share_percent: float = 100
 
 
+class DepartmentMapIn(BaseModel):
+    department: str
+    cost_centre_id: int
+
+
 class NotificationIn(BaseModel):
     name: str
     scope_type: str = "all"
@@ -118,11 +123,15 @@ def create_app(
     if settings.demo:
         seed_demo(store)
         directory = directory or StaticDirectory([
-            DirectoryUser("11111111-1111-1111-1111-111111111111", "alice.admin@contoso.example", "Alice Admin"),
-            DirectoryUser("22222222-2222-2222-2222-222222222222", "bob.risk@contoso.example", "Bob (owner, Risk)"),
-            DirectoryUser("33333333-3333-3333-3333-333333333333", "carol.care@contoso.example", "Carol (viewer, Support)"),
+            DirectoryUser("11111111-1111-1111-1111-111111111111", "alice.admin@contoso.example", "Alice Admin",
+                          department="Platform"),
+            DirectoryUser("22222222-2222-2222-2222-222222222222", "bob.risk@contoso.example", "Bob (owner, Risk)",
+                          department="Risk"),
+            DirectoryUser("33333333-3333-3333-3333-333333333333", "carol.care@contoso.example", "Carol (viewer, Support)",
+                          department="Support"),
             DirectoryUser("44444444-4444-4444-4444-444444444444", "dave.nobody@contoso.example", "Dave"),
-            DirectoryUser("55555555-5555-5555-5555-555555555555", "erin.finance@contoso.example", "Erin Finance"),
+            DirectoryUser("55555555-5555-5555-5555-555555555555", "erin.finance@contoso.example", "Erin Finance",
+                          department="Finance"),
         ])
         authenticator = authenticator or Authenticator(None, demo=True)
     else:
@@ -352,6 +361,31 @@ def create_app(
     def centre_report(basis: str = "project", days: int = Query(30, ge=1, le=90),
                       c: Ctx = Depends(ctx)) -> dict[str, Any]:
         return c.views.cost_centre_report(basis, days)
+
+    @app.get("/api/cost-centres/usage-split")
+    def usage_split(days: int = Query(30, ge=1, le=90), unattributed: str = "proportional",
+                    c: Ctx = Depends(admin)) -> dict[str, Any]:
+        return c.views.usage_split(days, unattributed, directory_)
+
+    @app.get("/api/cost-centres/department-map")
+    def department_map(c: Ctx = Depends(admin)) -> list[dict[str, Any]]:
+        return store.list_department_map()
+
+    @app.put("/api/cost-centres/department-map")
+    def set_department_map(body: DepartmentMapIn, c: Ctx = Depends(admin)) -> dict[str, Any]:
+        try:
+            out = store.set_department_map(body.department, body.cost_centre_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        store.audit(c.principal.oid, c.principal.upn, "cost_centre.department.set", out["department"],
+                    {"cost_centre_id": body.cost_centre_id})
+        return out
+
+    @app.delete("/api/cost-centres/department-map")
+    def delete_department_map(department: str, c: Ctx = Depends(admin)) -> dict[str, bool]:
+        ok = store.delete_department_map(department)
+        store.audit(c.principal.oid, c.principal.upn, "cost_centre.department.delete", department)
+        return {"deleted": ok}
 
     @app.post("/api/cost-centres")
     def create_centre(body: CostCentreIn, c: Ctx = Depends(admin)) -> dict[str, Any]:

@@ -67,7 +67,18 @@ CREATE TABLE audit (
 );
 CREATE INDEX audit_at ON audit(at DESC);
 """
-_VERSION = 1
+# Schema 2: which cost centre a department's usage is charged to, and a dated record of each caller's department.
+_SCHEMA_V2 = """
+CREATE TABLE department_map (
+  department TEXT PRIMARY KEY COLLATE NOCASE,
+  cost_centre_id INTEGER NOT NULL REFERENCES cost_centres(id) ON DELETE CASCADE
+);
+CREATE TABLE department_snapshot (
+  day TEXT NOT NULL, oid TEXT NOT NULL, department TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (day, oid)
+);
+"""
+_VERSION = 2
 
 
 def now_iso() -> str:
@@ -118,7 +129,10 @@ class Store:
         with self._conn() as c:
             version = c.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
-                c.executescript(_SCHEMA)
+                c.executescript(_SCHEMA + _SCHEMA_V2)
+                c.execute(f"PRAGMA user_version = {_VERSION}")
+            elif version == 1:
+                c.executescript(_SCHEMA_V2)
                 c.execute(f"PRAGMA user_version = {_VERSION}")
             elif version > _VERSION:
                 raise RuntimeError(f"{self.path} was written by a newer portal (schema {version})")
@@ -264,6 +278,51 @@ class Store:
     def delete_rule(self, rule_id: int) -> bool:
         with self._conn() as c:
             return c.execute("DELETE FROM allocation_rules WHERE id = ?", (rule_id,)).rowcount > 0
+
+    # ------------------------------------------------- departments and usage split
+    def set_department_map(self, department: str, cc_id: int) -> dict[str, Any]:
+        """Charge the usage of people in ``department`` (matched ignoring case and surrounding spaces) to a cost centre."""
+        department = department.strip()
+        if not department:
+            raise ValueError("department is required")
+        if self.get_cost_centre(cc_id) is None:
+            raise ValueError("No such cost centre")
+        with self._conn() as c:
+            c.execute("INSERT INTO department_map(department, cost_centre_id) VALUES (?, ?) "
+                      "ON CONFLICT(department) DO UPDATE SET cost_centre_id = excluded.cost_centre_id", (department, cc_id))
+        return {"department": department, "cost_centre_id": cc_id}
+
+    def delete_department_map(self, department: str) -> bool:
+        with self._conn() as c:
+            return c.execute("DELETE FROM department_map WHERE department = ?", (department.strip(),)).rowcount > 0
+
+    def list_department_map(self) -> list[dict[str, Any]]:
+        with self._conn() as c:
+            return self._rows(c.execute(
+                "SELECT m.department, m.cost_centre_id, cc.code AS cost_centre_code FROM department_map m "
+                "JOIN cost_centres cc ON cc.id = m.cost_centre_id ORDER BY m.department"))
+
+    def snapshot_departments(self, day: str, departments: dict[str, str]) -> None:
+        """Record each person's department as it was on ``day``. Later days never overwrite earlier ones."""
+        with self._conn() as c:
+            c.executemany("INSERT OR REPLACE INTO department_snapshot(day, oid, department) VALUES (?,?,?)",
+                          [(day, oid, (dept or "").strip()) for oid, dept in departments.items()])
+
+    def latest_departments(self, oids: list[str]) -> dict[str, tuple[str, str]]:
+        """``{oid: (day, department)}`` from each person's most recent snapshot. People never looked up are absent."""
+        if not oids:
+            return {}
+        out: dict[str, tuple[str, str]] = {}
+        with self._conn() as c:
+            for i in range(0, len(oids), 500):  # SQLite limits the number of parameters in one statement
+                chunk = oids[i:i + 500]
+                marks = ",".join("?" * len(chunk))
+                for r in c.execute(
+                        f"SELECT s.oid, s.day, s.department FROM department_snapshot s JOIN "
+                        f"(SELECT oid, MAX(day) AS day FROM department_snapshot WHERE oid IN ({marks}) GROUP BY oid) m "
+                        f"ON m.oid = s.oid AND m.day = s.day", chunk):
+                    out[r["oid"]] = (r["day"], r["department"])
+        return out
 
     # ------------------------------------------------------ notification rules
     def list_notification_rules(self) -> list[dict[str, Any]]:

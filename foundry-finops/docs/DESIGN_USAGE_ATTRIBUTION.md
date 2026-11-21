@@ -1,6 +1,6 @@
 # Design: splitting shared agent and model cost between cost centres by token usage
 
-Status: proposal, not implemented. Written 21 November 2026.
+Status: first slice implemented (see section 8); the rest is proposal. Written 21 November 2026.
 
 ## 1. Problem
 
@@ -214,3 +214,27 @@ Sources: [llm-emit-token-metric policy](https://learn.microsoft.com/en-us/azure/
 - Retention period for call records and snapshots.
 - Who may see per-person usage?
 - Link to the preview Cost Management SDK.
+
+## 8. Implementation status (21 November 2026)
+
+Built, with tests:
+
+| Part | Where | Notes |
+|---|---|---|
+| Optional caller identity on usage records | `foundry_finops.tracing` | `caller_oid`, `caller_tid`, `agent_id` through `finops_context`; `caller_type` derived (`user`, `agent`, `unknown`) and written to the `llm.usage` log record only, not to metric dimensions. `identity_from_claims` reads a validated token. No identity is `unknown`, never an error. |
+| Usage-based split | `foundry_finops.analysis.allocate_by_usage` | Cost or tokens as the measure. Unattributed usage is spread (`proportional`) or held on its own row (`hold`). Parts add up to the total. Reports a coverage percentage. |
+| Gateway policy | `examples/apim/` | **Prototype, not deployed.** XML parses and keeps its rules (test). Expressions, trace output and the log join are untested; the open checks are listed in its README. |
+| Portal schema 2 | `portal/backend` `db.py` | `department_map` and a dated `department_snapshot`. A version 1 database is upgraded in place. |
+| Portal split report | `GET /api/cost-centres/usage-split` | Administrators only. Department comes from Graph (`department` on the user) and is kept as a dated snapshot; people with no department are asked again on a later day. Department to cost centre mapping through `/api/cost-centres/department-map`. Returns unmapped departments and the coverage figure. |
+
+Not built yet:
+
+- **Live per-caller usage in the portal.** The live backend raises a clear error and the endpoint answers 501. It needs the
+  per-call records written by the gateway policy, read from Log Analytics. Demo mode uses illustrative data.
+- **Pools.** The split uses the whole Foundry resource's cost. Pools of chosen agents, deployments and tools are not
+  built.
+- **Idle capacity.** PTU cost with no per-call driver is not shown on its own line.
+- **Portal pages.** There is no screen for the report or the department mapping; the API is there.
+- **Publishing to Azure Cost Management** (4.6), and the preview SDK check.
+- **Reconciliation** of traced tokens against Azure Monitor totals.
+- **Retention** of call records and snapshots, and a rule for who may read per-person data beyond "administrators only".
