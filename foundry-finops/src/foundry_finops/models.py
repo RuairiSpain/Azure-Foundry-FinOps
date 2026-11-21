@@ -246,6 +246,8 @@ class CostControl(ArmResource):
     block: Threshold | None = None
     #: Owner scope – populated from the ID: ``account`` or ``project``.
     project: str | None = None
+    #: Read-only entity tag from the service; pass it as ``if_match`` to update or delete only if unchanged.
+    etag: str | None = None
 
     @property
     def alerts(self) -> list[Threshold]:
@@ -269,6 +271,11 @@ class CostControl(ArmResource):
             raise ValueError("A Foundry cost control has at most one alert and one Block action (the service rejects more)")
         if self.category == BudgetCategory.TOKENS and int(self.amount) != self.amount:
             raise ValueError("Token limits must be whole numbers")
+        for fname in ("project", "agent", "deployment"):
+            for value in self.filters.get(fname, []):
+                _check_short_name(fname, value)
+        if self.project:
+            _check_short_name("project", self.project)
         if "agent" in self.filters and len(self.filters.get("project", [])) != 1:
             raise ValueError("An agent filter needs a project filter with exactly one project")
         if "tokenType" in self.filters and self.category != BudgetCategory.TOKENS:
@@ -391,7 +398,19 @@ class CostControl(ArmResource):
             alert=alerts[0] if alerts else None,
             block=blocks[0] if blocks else None,
             project=project,
+            etag=d.get("etag"),
         )
+
+
+def _check_short_name(kind: str, value: str) -> None:
+    """Project, agent and deployment values are plain names, not IDs (rules from the cost-control API)."""
+    v = str(value)
+    if not 1 <= len(v) <= 64:
+        raise ValueError(f"A {kind} name must be 1-64 characters (got {len(v)})")
+    if v != v.strip() or any(ord(c) < 32 or ord(c) == 127 for c in v):
+        raise ValueError(f"A {kind} name can't have leading or trailing spaces or control characters: {v!r}")
+    if any(c in v for c in "/\\?#%") or v in (".", ".."):
+        raise ValueError(f"A {kind} name is a plain name without / \\ ? # % or '.' segments, not a resource ID: {v!r}")
 
 
 def _enum(cls: Any, value: Any, default: Any) -> Any:
@@ -535,6 +554,34 @@ class Budget(ArmResource):
             body["eTag"] = self.etag
         return body
 
+    def percent_used(self) -> float | None:
+        """Actual spend as a percentage of the amount, or ``None`` when the service reported no spend."""
+        if self.current_spend is None or not self.amount:
+            return None
+        return round(self.current_spend / self.amount * 100, 2)
+
+    def percent_forecast(self) -> float | None:
+        if self.forecast_spend is None or not self.amount:
+            return None
+        return round(self.forecast_spend / self.amount * 100, 2)
+
+    def notification_status(self) -> list[dict[str, Any]]:
+        """For each notification, whether the spend the service reported has reached its threshold.
+
+        Computed from ``currentSpend`` and ``forecastSpend`` on the budget itself, so it makes no extra call and
+        invents nothing: ``reached`` is ``None`` when the service didn't report the spend it needs. This is
+        the budget's own arithmetic, not a record of emails the service actually sent.
+        """
+        out = []
+        for n in self.notifications:
+            pct = self.percent_forecast() if n.threshold_type == "Forecasted" else self.percent_used()
+            out.append({
+                "notification": n.key(), "threshold_percent": n.threshold, "type": n.threshold_type,
+                "spend_percent": pct, "reached": None if pct is None else pct >= n.threshold,
+                "enabled": n.enabled,
+            })
+        return out
+
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> Budget:
         p = _props(d)
@@ -599,11 +646,44 @@ class CostQuery:
     metric: str = "Cost"  #: Cost | PreTaxCost | CostUSD | PreTaxCostUSD
     grouping: list[dict[str, str]] = field(default_factory=list)
     filters: list[dict[str, Any]] = field(default_factory=list)
+    #: Also return ``UsageQuantity`` (units consumed) next to the cost, e.g. to derive an effective unit price.
+    with_quantity: bool = False
+
+    #: Time frames the Cost Management API accepts besides ``Custom``.
+    TIMEFRAMES = ("MonthToDate", "BillingMonthToDate", "TheLastMonth", "TheLastBillingMonth", "WeekToDate",
+                  "TheCurrentMonth")
 
     # constructors
     @classmethod
     def month_to_date(cls) -> CostQuery:
         return cls()
+
+    @classmethod
+    def for_timeframe(cls, timeframe: str) -> CostQuery:
+        """One of the API's named time frames: ``WeekToDate``, ``TheLastMonth``, ``BillingMonthToDate``, ..."""
+        if timeframe not in cls.TIMEFRAMES:
+            raise ValueError(f"timeframe must be one of {', '.join(cls.TIMEFRAMES)} (use between() for a date range)")
+        return cls(timeframe=timeframe)
+
+    @classmethod
+    def week_to_date(cls) -> CostQuery:
+        return cls.for_timeframe("WeekToDate")
+
+    @classmethod
+    def last_month(cls) -> CostQuery:
+        return cls.for_timeframe("TheLastMonth")
+
+    @classmethod
+    def billing_month_to_date(cls) -> CostQuery:
+        return cls.for_timeframe("BillingMonthToDate")
+
+    @classmethod
+    def last_billing_month(cls) -> CostQuery:
+        return cls.for_timeframe("TheLastBillingMonth")
+
+    @classmethod
+    def current_month(cls) -> CostQuery:
+        return cls.for_timeframe("TheCurrentMonth")
 
     @classmethod
     def between(cls, start: date | datetime | str, end: date | datetime | str) -> CostQuery:
@@ -650,10 +730,81 @@ class CostQuery:
         self.filters.append({"tags": {"name": tag, "operator": "In", "values": list(values)}})
         return self
 
+    @staticmethod
+    def _condition(kind: str, name: str, values: Sequence[str]) -> dict[str, Any]:
+        if kind not in ("dimension", "tag"):
+            raise ValueError("kind must be 'dimension' or 'tag'")
+        return {("dimensions" if kind == "dimension" else "tags"): {"name": name, "operator": "In",
+                                                                    "values": list(values)}}
+
+    def where_any(self, *conditions: tuple[str, str, Sequence[str]]) -> CostQuery:
+        """Match rows that satisfy ANY of the conditions. Each is ``("dimension" | "tag", name, values)``.
+
+        >>> q.where_any(("tag", "team", ["risk"]), ("dimension", "ResourceGroupName", ["rg-ai"]))
+        """
+        if len(conditions) < 2:
+            raise ValueError("where_any needs at least two conditions")
+        self.filters.append({"or": [self._condition(*c) for c in conditions]})
+        return self
+
+    def where_not(self, kind: str, name: str, values: Sequence[str]) -> CostQuery:
+        """Exclude rows that match the condition."""
+        self.filters.append({"not": self._condition(kind, name, values)})
+        return self
+
+    def quantity(self) -> CostQuery:
+        """Also return ``UsageQuantity`` for each row."""
+        self.with_quantity = True
+        return self
+
+    # ------------------------------------------------------------------- files
+    @classmethod
+    def from_dict(cls, body: Mapping[str, Any]) -> CostQuery:
+        """Rebuild a query from a request body (the inverse of :meth:`to_dict`), e.g. a saved JSON file."""
+        dataset = dict(body.get("dataset") or {})
+        agg = dataset.get("aggregation") or {}
+        metric = next((a.get("name") for a in agg.values() if a.get("name") != "UsageQuantity"), "Cost")
+        flt = dataset.get("filter")
+        filters = list(flt["and"]) if isinstance(flt, dict) and set(flt) == {"and"} else ([flt] if flt else [])
+        tp = body.get("timePeriod") or {}
+        try:
+            granularity = Granularity(dataset.get("granularity") or "Daily")
+        except ValueError as exc:
+            raise ValueError(f"Unknown granularity {dataset.get('granularity')!r}") from exc
+        return cls(
+            timeframe=body.get("timeframe", "MonthToDate"), start=tp.get("from"), end=tp.get("to"),
+            granularity=granularity, cost_type=body.get("type", "ActualCost"), metric=metric or "Cost",
+            grouping=[dict(g) for g in dataset.get("grouping") or []], filters=filters,
+            with_quantity=any(a.get("name") == "UsageQuantity" for a in agg.values()),
+        )
+
+    def save(self, path: str) -> None:
+        """Write the query as JSON, so a saved view can live in a file or in source control."""
+        import pathlib
+
+        pathlib.Path(path).write_text(json.dumps(self.to_dict(), indent=2) + "\n", encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: str) -> CostQuery:
+        import pathlib
+
+        try:
+            body = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path} isn't valid JSON: {exc}") from exc
+        if not isinstance(body, dict):
+            raise ValueError(f"{path} must contain a JSON object (a Cost Management query body)")
+        return cls.from_dict(body)
+
     def to_dict(self) -> dict[str, Any]:
+        if len(self.grouping) > 2:
+            raise ValueError("Cost Management queries allow at most 2 group-by clauses")
+        aggregation: dict[str, Any] = {"totalCost": {"name": self.metric, "function": "Sum"}}
+        if self.with_quantity:
+            aggregation["totalQuantity"] = {"name": "UsageQuantity", "function": "Sum"}
         dataset: dict[str, Any] = {
             "granularity": str(self.granularity),
-            "aggregation": {"totalCost": {"name": self.metric, "function": "Sum"}},
+            "aggregation": aggregation,
         }
         if self.grouping:
             dataset["grouping"] = self.grouping
@@ -716,13 +867,30 @@ class Deployment(ArmResource):
     provisioning_state: str | None = None
     rate_limits: list[dict[str, Any]] = field(default_factory=list)
     tags: dict[str, str] = field(default_factory=dict)
+    #: ``Default`` or ``Priority`` (priority processing is priced differently). Needs API 2026-11-01 or newer.
+    service_tier: str | None = None
+    #: ``Running`` or ``Paused``.
+    deployment_state: str | None = None
+    #: Name of the deployment that serves requests this one would otherwise reject.
+    spillover_deployment: str | None = None
+
+    @property
+    def is_provisioned(self) -> bool:
+        """``True`` for provisioned throughput (PTU) SKUs such as ``ProvisionedManaged``, ``GlobalProvisionedManaged``."""
+        return "provisioned" in (self.sku_name or "").lower()
 
     @property
     def tokens_per_minute(self) -> int | None:
+        """Token rate limit reported by the service, else thousands of TPM for Standard SKUs.
+
+        ``None`` for provisioned SKUs: their capacity is in PTUs, which don't convert to tokens per minute.
+        """
         for rl in self.rate_limits:
             if rl.get("key") == "token":
                 return int(rl.get("count", 0))
-        return self.capacity * 1000 if self.capacity is not None and self.sku_name != "ProvisionedManaged" else None
+        if self.is_provisioned:
+            return None
+        return self.capacity * 1000 if self.capacity is not None else None
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> Deployment:
@@ -734,6 +902,7 @@ class Deployment(ArmResource):
             m.get("name"), m.get("version"), m.get("format"),
             sku.get("name"), sku.get("capacity"), p.get("raiPolicyName"),
             p.get("provisioningState"), list(p.get("rateLimits") or []), dict(d.get("tags") or {}),
+            p.get("serviceTier"), p.get("deploymentState"), p.get("spilloverDeploymentName"),
         )
 
 

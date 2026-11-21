@@ -676,6 +676,9 @@ class LiveService(_Base):
             return None, "Per-session budgets can't be reconstructed from billing or metrics data."
         if cc.category == BudgetCategory.TOKENS:
             return self._token_usage(cc, start, now)
+        near_real_time = self._estimated_usage(cc, start, now)
+        if near_real_time is not None:
+            return near_real_time
         q = CostQuery.between(start, now).total()
         tags = {"project": "project", "deployment": "deployment", "agent": "agent.name"}
         filters = dict(cc.filters)
@@ -699,6 +702,52 @@ class LiveService(_Base):
             usage = _sum_cost(rows)
             note = "Billed cost in the current window (8-24 h lag), so recent usage isn't included yet."
         return round(usage, 4), note
+
+    def _estimated_usage(
+        self, cc: CostControl, start: datetime, now: datetime
+    ) -> tuple[float | None, str | None] | None:
+        """Cost-budget usage from the ``FoundryModelEstimatedCost`` metric (minutes old, not 8-24 h), or ``None``.
+
+        The metric only has project and deployment dimensions, so it can serve a control that is shared across the
+        resource and filters at most on project and deployment. The project filter is matched against the metric's
+        ``ProjectId`` values without guessing: if a named project can't be found among them, ``None`` is returned and the
+        caller falls back to billed cost.
+        """
+        from .operations.monitor import FoundryMetrics, project_matches
+
+        if set(cc.filters) - {"project", "deployment"} or cc.sharing != BudgetSharing.SHARED:
+            return None
+        wanted_projects = list(cc.filters.get("project") or ([cc.project] if cc.project else []))
+        wanted_deployments = {d.lower() for d in cc.filters.get("deployment") or []}
+        try:
+            rows = self.fo.metrics.estimated_cost(
+                self._account_id, start=start, end=now, interval="PT1H" if (now - start).days < 2 else "P1D",
+                by=(FoundryMetrics.PROJECT_DIMENSION, FoundryMetrics.DEPLOYMENT_DIMENSION),
+            )
+        except Exception:
+            logger.debug("Estimated-cost metric unavailable", exc_info=True)
+            return None
+        if not rows:
+            return None
+        pkey, dkey = FoundryMetrics.PROJECT_DIMENSION.lower(), FoundryMetrics.DEPLOYMENT_DIMENSION.lower()
+        seen = {str(r.get(pkey) or "") for r in rows}
+        keep_projects: set[str] | None = None
+        if wanted_projects:
+            keep_projects = {v for v in seen if any(project_matches(v, w) for w in wanted_projects)}
+            unmatched = [w for w in wanted_projects if not any(project_matches(v, w) for v in seen)]
+            if unmatched:
+                return None  # can't tie every named project to a ProjectId value: don't report a partial figure
+        total = 0.0
+        for r in rows:
+            if r["estimated_cost_usd"] is None:
+                continue
+            if keep_projects is not None and str(r.get(pkey) or "") not in keep_projects:
+                continue
+            if wanted_deployments and str(r.get(dkey) or "").lower() not in wanted_deployments:
+                continue
+            total += float(r["estimated_cost_usd"])
+        return round(total, 4), ("Near-real-time estimate from the FoundryModelEstimatedCost metric (Preview): "
+                                 "an estimate in USD for Foundry models, not billed cost.")
 
     def _token_usage(self, cc: CostControl, start: datetime, now: datetime) -> tuple[float | None, str | None]:
         if set(cc.filters) - {"deployment", "tokenType"} or cc.project or cc.sharing != BudgetSharing.SHARED:
@@ -741,7 +790,9 @@ class LiveService(_Base):
         for b in self.fo.cost.list_budgets():
             row = b.to_json()
             row["time_grain"] = str(b.time_grain)
-            row["percent_used"] = round((b.current_spend or 0) / b.amount * 100, 1) if b.amount else None
+            row["percent_used"] = b.percent_used()  # None, not 0, when the service reported no spend
+            row["percent_forecast"] = b.percent_forecast()
+            row["notification_status"] = b.notification_status()
             out.append(row)
         return out
 

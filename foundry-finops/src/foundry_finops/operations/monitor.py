@@ -24,9 +24,43 @@ class FoundryMetrics:
     MODEL_TOTAL_TOKENS = "TotalTokens"
     MODEL_REQUESTS = "ModelRequests"
 
+    #: Estimated USD cost of Foundry model usage per minute (Preview; an estimate, not an invoice or billed charge).
+    #: Dimensions: ProjectId, ModelDeploymentName, ModelName, ModelVersion, Region. Not exportable.
+    ESTIMATED_COST = "FoundryModelEstimatedCost"
+    #: Provisioned (PTU) deployment utilisation in percent: (PTUs consumed / PTUs deployed) x 100. At or above 100
+    #: calls are throttled (HTTP 429). ``PROVISIONED_UTILIZATION_V2`` is the current one; the original is deprecated.
+    PROVISIONED_UTILIZATION_V2 = "AzureOpenAIProvisionedManagedUtilizationV2"
+    PROVISIONED_UTILIZATION = "ProvisionedUtilization"
+    #: Tokens minus cached tokens (PTU deployments); also split by ServiceTierRequest and ServiceTierResponse.
+    ACTIVE_TOKENS = "ActiveTokens"
+    #: Percentage of prompt tokens that hit the prompt cache.
+    CACHE_MATCH_RATE = "AzureOpenAIContextTokensCacheMatchRate"
+    MODEL_ROUTER_INPUT_TOKENS = "ModelRouterInputTokens"
+    MODEL_ROUTER_OUTPUT_TOKENS = "ModelRouterOutputTokens"
+    MODEL_ROUTER_CACHED_TOKENS = "ModelRouterCachedTokens"
+    MODEL_ROUTER_REQUESTS = "ModelRouterRequests"
+    AUDIO_PROMPT_TOKENS = "AudioPromptTokens"
+    AUDIO_COMPLETION_TOKENS = "AudioCompletionTokens"
+    #: Anthropic prompt-cache tokens.
+    CACHE_READ_INPUT_TOKENS = "cacheReadInputTokens"
+    CACHE_WRITE_1H_INPUT_TOKENS = "ephemeral1hInputTokens"
+    CACHE_WRITE_5M_INPUT_TOKENS = "ephemeral5mInputTokens"
+
     TOKENS = (INPUT_TOKENS, OUTPUT_TOKENS, TOTAL_TOKENS)
     DEPLOYMENT_DIMENSION = "ModelDeploymentName"
     MODEL_DIMENSION = "ModelName"
+    PROJECT_DIMENSION = "ProjectId"
+
+
+def project_matches(dimension_value: str, project: str) -> bool:
+    """Does a ``ProjectId`` metric dimension value refer to the Foundry project named ``project``?
+
+    The metric doesn't document the format of its ``ProjectId`` values, so this accepts the plain name or a resource
+    ID that ends in ``/projects/<name>``, case-insensitively, and nothing else. Callers must treat "no match" as
+    "unknown", never guess.
+    """
+    v, p = str(dimension_value).strip().lower(), str(project).strip().lower()
+    return bool(p) and (v == p or v.endswith("/projects/" + p))
 
 
 def _timespan(start: datetime | str | None, end: datetime | str | None, hours: int) -> str:
@@ -86,6 +120,53 @@ class MetricsOperations(_Operations):
                 pts = [MetricPoint(p.get("timeStamp", ""), p.get(agg_key)) for p in ts.get("data") or []]
                 out.append(MetricSeries(mname, metric.get("unit", ""), dims, pts))
         return out
+
+    def estimated_cost(
+        self,
+        resource_id: str,
+        *,
+        start: datetime | str | None = None,
+        end: datetime | str | None = None,
+        hours: int = 24,
+        by: Sequence[str] = (FoundryMetrics.PROJECT_DIMENSION,),
+        interval: str = "PT1H",
+        top: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Near-real-time **estimated** USD cost of Foundry model usage, from the ``FoundryModelEstimatedCost`` metric.
+
+        One record per time interval and ``by`` combination, with the values exactly as Azure Monitor returns them.
+        Microsoft documents the metric as a Preview estimate that applies to Foundry models only; Cost Management
+        stays the system of record for billed cost. ``by`` takes metric dimensions (``ProjectId``,
+        ``ModelDeploymentName``, ``ModelName``, ``ModelVersion``, ``Region``). Dimension values are not translated: a
+        ``ProjectId`` is whatever the service reports.
+        """
+        series = self.query(
+            resource_id, [FoundryMetrics.ESTIMATED_COST], start=start, end=end, hours=hours, interval=interval,
+            aggregation="Total", split_by=tuple(by), top=top,
+        )
+        out: list[dict[str, Any]] = []
+        for s in series:
+            for p in s.points:
+                out.append({"timestamp": p.timestamp, **s.dimensions, "estimated_cost_usd": p.value})
+        return out
+
+    def estimated_cost_totals(
+        self, resource_id: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        """:meth:`estimated_cost` summed per ``by`` combination over the whole period, highest first.
+
+        Intervals the service reported no value for are skipped, not counted as zero.
+        """
+        by = tuple(kwargs.get("by", (FoundryMetrics.PROJECT_DIMENSION,)))
+        totals: dict[tuple[str, ...], float] = {}
+        for r in self.estimated_cost(resource_id, **kwargs):
+            if r["estimated_cost_usd"] is None:
+                continue
+            key = tuple(str(r.get(d.lower()) or r.get(d) or "") for d in by)
+            totals[key] = totals.get(key, 0.0) + float(r["estimated_cost_usd"])
+        rows = [{**{d.lower(): v for d, v in zip(by, k, strict=True)}, "estimated_cost_usd": round(v, 6)}
+                for k, v in totals.items()]
+        return sorted(rows, key=lambda r: -r["estimated_cost_usd"])
 
     def query_table(self, resource_id: str, metrics: Sequence[str] = FoundryMetrics.TOKENS, **kwargs: Any) -> Table:
         """Same as :meth:`query` but flattened into a :class:`Table` (one row per point)."""

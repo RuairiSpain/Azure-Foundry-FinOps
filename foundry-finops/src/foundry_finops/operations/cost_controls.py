@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Any
 
 from .._ids import foundry_account_id
+from ..errors import ForbiddenError
 from ..models import CostControl
 from ._base import _Operations
 
@@ -18,6 +20,23 @@ class CostControlOperations(_Operations):
     The service documents that concurrent creates on one Foundry resource can fail with
     HTTP 409, so create cost controls one at a time.
     """
+
+    _REGISTRATION_HINT = (
+        "Selecting traffic by identity (agent or session filters) needs the feature "
+        "Microsoft.CognitiveServices/CostControlsByIdentity registered on the subscription "
+        "(az feature register --namespace Microsoft.CognitiveServices --name CostControlsByIdentity)."
+    )
+
+    def _write(self, method: str, url: str, *, body: Any = None, headers: Any = None) -> Any:
+        """Write call that explains a ``FeatureNotRegistered`` refusal instead of leaving it opaque."""
+        try:
+            return self._arm(method, url, self._v.cost_controls, body=body, headers=headers)
+        except ForbiddenError as exc:
+            if (exc.code or "").lower() == "featurenotregistered":
+                raise ForbiddenError(f"{exc.message} {self._REGISTRATION_HINT}", status_code=exc.status_code,
+                                     code=exc.code, headers=exc.headers, body=exc.body, method=exc.method,
+                                     url=exc.url) from exc
+            raise
 
     def _base(self, account: str, project: str | None, resource_group: str | None) -> str:
         rid = foundry_account_id(self._sub, self._rg_or_default(resource_group), account)
@@ -57,14 +76,21 @@ class CostControlOperations(_Operations):
         project: str | None = None,
         resource_group: str | None = None,
         only_if_new: bool = False,
+        if_match: str | None = None,
     ) -> CostControl:
-        """PUT a cost control. ``only_if_new=True`` sends ``If-None-Match: *`` (raises ConflictError if it exists)."""
+        """PUT a cost control.
+
+        ``only_if_new=True`` sends ``If-None-Match: *`` (raises ConflictError if it exists). ``if_match`` takes the
+        ``etag`` of a cost control you read and replaces it only if nobody changed it since (ConflictError otherwise).
+        """
         if not cost_control.name:
             raise ValueError("cost_control.name is required")
+        if only_if_new and if_match:
+            raise ValueError("Use only_if_new or if_match, not both")
         cost_control.project = project or cost_control.project
-        url = f"{self._base(account, cost_control.project, resource_group)}/{cost_control.name}"
-        headers = {"If-None-Match": "*"} if only_if_new else None
-        resp = self._arm("PUT", url, self._v.cost_controls, body=cost_control.to_dict(), headers=headers)
+        url = f"{self._base(account, cost_control.project, resource_group)}/{self._seg(cost_control.name)}"
+        headers = {"If-None-Match": "*"} if only_if_new else ({"If-Match": if_match} if if_match else None)
+        resp = self._write("PUT", url, body=cost_control.to_dict(), headers=headers)
         return CostControl.from_dict(resp.body) if resp.body else self.get(
             account, cost_control.name, project=cost_control.project, resource_group=resource_group
         )
@@ -76,26 +102,29 @@ class CostControlOperations(_Operations):
         *,
         project: str | None = None,
         resource_group: str | None = None,
+        if_match: str | None = None,
         **properties: object,
     ) -> CostControl:
         """PATCH only the given ARM properties, e.g. ``update(acct, "x", amount=750)``.
 
         Changing the reset period or sharing restarts the usage count. The budget type
-        (``category``) can't be changed.
+        (``category``) can't be changed. ``if_match`` makes the change conditional on the ``etag`` you read.
         """
         if "category" in properties:
             raise ValueError("A cost control's budget type can't be changed; create a new one")
         url = f"{self._base(account, project, resource_group)}/{self._seg(name)}"
-        resp = self._arm("PATCH", url, self._v.cost_controls, body={"properties": properties})
+        resp = self._write("PATCH", url, body={"properties": properties},
+                           headers={"If-Match": if_match} if if_match else None)
         return CostControl.from_dict(resp.body) if resp.body else self.get(
             account, name, project=project, resource_group=resource_group
         )
 
     def delete(
-        self, account: str, name: str, *, project: str | None = None, resource_group: str | None = None
+        self, account: str, name: str, *, project: str | None = None, resource_group: str | None = None,
+        if_match: str | None = None,
     ) -> None:
         url = f"{self._base(account, project, resource_group)}/{self._seg(name)}"
-        self._arm("DELETE", url, self._v.cost_controls)
+        self._write("DELETE", url, headers={"If-Match": if_match} if if_match else None)
 
     def find_event_grid_connection_id(self, account: str, *, resource_group: str | None = None) -> str | None:
         """Return an ``eventGridConnectionId`` already used by an existing cost control.

@@ -154,3 +154,29 @@ account paths, and the tag-inheritance path.
   behaviour that depends on your billing type (EA, MCA, CSP, pay-as-you-go); the specs do not describe that fully.
 * The estimated-cost metric is marked Preview and as an estimate by Microsoft. Billed cost from Cost Management remains
   the system of record.
+
+## 8. Gaps closed using only the existing APIs
+
+Added after the review, from calls the SDK already made. Each item uses data the services return; none estimates or invents a
+value, and each says what it can't do.
+
+| Gap | What was added | Built from | Limit |
+|---|---|---|---|
+| Near-real-time project cost | `FoundryMetrics.ESTIMATED_COST`, `fo.metrics.estimated_cost()` and `estimated_cost_totals()`, CLI `estimated-cost`, download files `estimated_cost_by_project` and `_by_deployment` | Azure Monitor `FoundryModelEstimatedCost` (Preview) | A Microsoft-documented estimate for Foundry models, not billed cost. `ProjectId` values are shown as returned. |
+| Cost-control usage lag | Cost budgets that are shared and filter at most on project and deployment read usage from that metric | The same metric | The project name must match a `ProjectId` value exactly (name or `/projects/<name>`); otherwise it falls back to billed cost. No guessing. |
+| Negotiated prices | `fo.cost.effective_prices()`, `EffectivePrices.to_price_sheet()`, `effective_discounts()`, CLI `prices --source billed [--compare]`, download file `effective_prices` | Cost Management query: cost and `UsageQuantity` by `Meter` and `UnitOfMeasure` | Needs billed usage in the period. Meters not priced per token get no per-1M figure. |
+| Discount percentage | `PriceSheet.scaled()`, `openai_price_sheet(discount_percent=)`, CLI `prices --discount-percent`, `download --discount-percent` | The percentage **you pass** | Applied exactly as given and recorded on the sheet; never looked up. Retail prices only. |
+| Anomaly alerts | `detect_anomalies()`, `anomalies_from_table()`, CLI `anomalies`, download file `cost_anomalies` | The daily billed-cost query | Statistical outliers in your own data (modified z-score against a 28-day median); not Azure's anomaly alerts and no notification. |
+| Cost Management alerts | `Budget.percent_used()`, `percent_forecast()`, `notification_status()`, download file `budget_status` | `currentSpend`, `forecastSpend` and thresholds on the budget | Unknown (`None`) when the service reports no spend; not a record of sent emails. |
+| Saved views | `CostQuery.save()`, `load()`, `from_dict()`, CLI `query FILE` | The query body | Files, not portal views. |
+| Query ergonomics | `where_any` (OR), `where_not`, `quantity()`, named time frames, 2 group-by check | The documented query grammar | |
+| Reservation vs on-demand | `cost --by PricingModel` and `ChargeType`, download files `cost_by_pricing_model` and `cost_by_charge_type` | Cost Management dimensions | Dimension names are not in the OpenAPI spec; check `fo.cost.dimensions()`. A scope that lacks one returns an error. |
+| Export options | `get_export`, FOCUS and Parquet, compression, partitioning, overwrite behaviour, description, columns, data version, Custom periods, `run_export_and_wait` | Exports API | Reading the exported files needs storage access, which the SDK doesn't have. |
+| PTU planning | Utilisation and related metric names, `ptu_headroom()`, CLI `ptu`, download file `ptu_headroom` | Deployments, regional quota usages, the utilisation metric | Commitment plans, capacity calculator and quota tiers still need new APIs. |
+| Shared-cost allocation | `allocate_cost()`, CLI `allocate` | Billed cost (or a total you supply) and token shares | A rule you choose, not billed cost; not visible in the portal or budgets. |
+| API versions and deployment fields | Cost Management `2026-06-01`, Cognitive Services `2026-11-01`, tag inheritance on the stable version; `Deployment.service_tier`, `deployment_state`, `spillover_deployment`, `is_provisioned` | The newer stable specs | Provisioned capacity is never converted to tokens per minute. |
+| Cost-control details | `etag` and `if_match` on update and delete, `FeatureNotRegistered` explained, filter-name rules validated | The preview spec | |
+
+**Still needs new API groups:** Cost Management alerts and scheduled actions (the real, portal-visible ones), saved portal
+views, the cost details report, cost allocation and markup rules, price sheet download, benefit and reservation utilisation,
+commitment plans and tiers, model capacities, the capacity calculator, quota tiers, and API Management reports and quotas.

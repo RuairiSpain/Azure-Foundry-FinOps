@@ -22,6 +22,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from . import cli_reports
 from .errors import FinOpsError
 from .models import Column, Table, dumps
 
@@ -83,6 +84,8 @@ def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         ap.error("download: pass --account (or set FINOPS_FOUNDRY_ACCOUNT)")
     if not args.resource_group:
         ap.error("download: pass -g/--resource-group (or set FINOPS_RESOURCE_GROUP): the Foundry resource lives in it")
+    if not 0 <= args.discount_percent < 100:
+        ap.error("--discount-percent must be at least 0 and below 100")
     if not args.list:
         if not args.start or not args.end:
             ap.error("download: --start and --end are required (YYYY-MM-DD)")
@@ -104,6 +107,7 @@ def _download(ap: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         ctx = ExportContext(
             client=svc.fo, service=svc, account=args.account, start=args.start, end=args.end, project=args.project,
             location=args.location, logs_target=args.logs_target, apim_service=args.apim_service, team_tag=team_tag,
+            discount_percent=args.discount_percent,
         )
         only = [n.strip() for n in args.only.split(",") if n.strip()] if args.only else None
         result = run_export(ctx, Path(args.output_dir), only, roles, access)
@@ -183,6 +187,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Log Analytics workspace ID or App Insights resource ID, for the KQL queries")
     p.add_argument("--apim-service", default=os.environ.get("FINOPS_APIM_SERVICE", ""),
                    help="API Management instance, for the gateway query")
+    p.add_argument("--discount-percent", type=float, default=0.0,
+                   help="a discount you know, applied to the retail price sheet file (recorded as supplied by you)")
+    cli_reports.add_parsers(sub, account_default)
     sub.add_parser("budgets", help="Cost Management budgets")
     p = sub.add_parser("quota", help="regional model quota")
     p.add_argument("--location", default=os.environ.get("FINOPS_LOCATION", "eastus2"))
@@ -199,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("days", "hours"):
         if getattr(args, name, 1) < 1:
             ap.error(f"--{name} must be at least 1")
+    if args.cmd in cli_reports.COMMANDS:
+        return cli_reports.run(ap, args, _emit)
     if args.cmd == "download":
         try:
             return _download(ap, args)

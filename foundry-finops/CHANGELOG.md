@@ -5,6 +5,15 @@
 First release.
 
 ### Features
+- Gaps from the API review closed with the existing APIs (see `docs/API_COVERAGE.md`, section 8):
+  `estimated-cost` (preview `FoundryModelEstimatedCost` metric) and cost-control usage from it; effective prices and the
+  implied discount from your billing (`prices --source billed --compare`); a discount percentage you supply
+  (`PriceSheet.scaled`, `prices --discount-percent`, `download --discount-percent`); `anomalies`; budget threshold status;
+  PTU headroom (`ptu`); shared-cost `allocate`; saved queries (`query`); OR/NOT filters, quantity and named time frames;
+  full export options with `get_export` and `run_export_and_wait`; `etag`/`if_match` on cost controls; new `Deployment`
+  fields; Cost Management `2026-06-01` and Cognitive Services `2026-11-01`. New download files:
+  `estimated_cost_by_project`, `estimated_cost_by_deployment`, `cost_by_pricing_model`, `cost_by_charge_type`,
+  `cost_anomalies`, `effective_prices`, `budget_status`, `ptu_headroom`.
 - Review of the Azure cost and usage APIs against the SDK (`docs/API_COVERAGE.md`), with a prioritised list of additions.
 - `foundry-finops cost --scope` queries any scope (subscription, resource group, resource, management group, billing
   scope), and `--by` accepts any tag name or Cost Management dimension as well as the five Foundry groups.

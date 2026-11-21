@@ -159,10 +159,10 @@ Reader** on the subscription, plus **Log Analytics Reader** for the KQL files.
 
 | Queries (file names) | Role | Scope |
 |---|---|---|
-| `cost_*`, `cost_forecast`, `cost_dimensions`, `cost_exports`, `budgets` | **Cost Management Reader** | The Foundry resource for cost queries; the resource group or subscription for budgets |
+| `cost_*` (including `cost_by_pricing_model`, `cost_by_charge_type`, `cost_anomalies`), `cost_forecast`, `cost_dimensions`, `cost_exports`, `effective_prices`, `budgets`, `budget_status` | **Cost Management Reader** | The Foundry resource for cost queries; the resource group or subscription for budgets |
 | `foundry_account`, `foundry_projects`, `foundry_deployments`, `foundry_connections`, `cost_controls`, `apim_gateway`, `tags` (account and project) | **Reader** | The resource group with the Foundry resource and the API Management instance |
-| `quota_usage`, `quota_models`, `foundry_event_grid_topics`, tag inventory in `tags` | **Reader** | The subscription (these calls are subscription-wide) |
-| `token_usage_by_*`, `metric_definitions`, `alerts` | **Monitoring Reader** | The Foundry resource; the resource group for alerts |
+| `quota_usage`, `quota_models`, `ptu_headroom`, `foundry_event_grid_topics`, tag inventory in `tags` | **Reader** | The subscription (these calls are subscription-wide) |
+| `token_usage_by_*`, `estimated_cost_by_*`, `metric_definitions`, `alerts` | **Monitoring Reader** | The Foundry resource; the resource group for alerts |
 | `kql_*` | **Log Analytics Reader** (workspace) or **Monitoring Reader** (Application Insights resource) | The resource that holds the telemetry |
 | `retail_price_sheet` | None (public API) | n/a |
 

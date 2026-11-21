@@ -58,9 +58,9 @@ class ApiVersions:
     #: Foundry cost controls (public preview).
     cost_controls: str = "2026-11-15-preview"
     #: Microsoft.CognitiveServices accounts, projects, deployments, usages, connections.
-    cognitive_services: str = "2025-06-01"
+    cognitive_services: str = "2026-11-01"
     #: Microsoft.CostManagement query, forecast, exports and budgets.
-    cost_management: str = "2025-03-01"
+    cost_management: str = "2026-06-01"
     #: Microsoft.Insights metrics and metric definitions.
     metrics: str = "2021-05-01"
     metric_alerts: str = "2018-03-01"

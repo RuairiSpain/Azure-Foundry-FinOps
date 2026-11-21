@@ -41,6 +41,15 @@ QUERY_REQUIREMENTS: dict[str, Requirement] = {
     **{n: _need("Microsoft.CostManagement/query/read", scope="account") for n in (
         "cost_daily_total", "cost_by_project", "cost_by_agent", "cost_by_deployment", "cost_by_team",
         "cost_by_model", "cost_by_meter")},
+    **{n: _need("Microsoft.CostManagement/query/read", scope="account") for n in (
+        "cost_by_pricing_model", "cost_by_charge_type", "cost_anomalies")},
+    "effective_prices": _need("Microsoft.CostManagement/query/read", "Microsoft.CostManagement/dimensions/read",
+                              scope="account"),
+    "budget_status": _need("Microsoft.Consumption/budgets/read", scope="resource_group"),
+    "estimated_cost_by_project": _need("Microsoft.Insights/metrics/read", scope="account"),
+    "estimated_cost_by_deployment": _need("Microsoft.Insights/metrics/read", scope="account"),
+    "ptu_headroom": _need(f"{_COG}/accounts/deployments/read", f"{_COG}/accounts/read", "Microsoft.Insights/metrics/read",
+                          f"{_COG}/locations/usages/read", scope="subscription"),
     "cost_forecast": _need("Microsoft.CostManagement/forecast/read", scope="account"),
     "cost_dimensions": _need("Microsoft.CostManagement/dimensions/read", scope="account"),
     "cost_exports": _need("Microsoft.CostManagement/exports/read", scope="account"),

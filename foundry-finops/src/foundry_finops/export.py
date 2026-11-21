@@ -20,9 +20,11 @@ from pathlib import Path
 from typing import Any
 
 from . import queries
+from .analysis import anomalies_from_table, ptu_headroom
 from .client import FinOpsClient
 from .errors import AuthenticationError, FinOpsError
 from .models import CostQuery, Table, _jsonable, metric_series_to_table
+from .operations.monitor import FoundryMetrics, project_matches
 from .service import LiveService
 
 #: Cost Management rejects queries that span more than a year.
@@ -48,6 +50,8 @@ class ExportContext:
     logs_target: str = ""
     apim_service: str = ""
     team_tag: str = "team"
+    #: A discount you know, in percent, applied to the retail price sheet file (never read from Azure).
+    discount_percent: float = 0.0
     today: date = field(default_factory=lambda: datetime.now(timezone.utc).date())
     #: Notes added by queries (for example "metrics clamped to 93 days"); saved in the manifest.
     notes: dict[str, list[str]] = field(default_factory=dict)
@@ -157,6 +161,82 @@ def _metrics(split: str, name: str) -> Callable[[ExportContext], Any]:
     return run
 
 
+def _estimated_cost(by: tuple[str, ...], name: str) -> Callable[[ExportContext], Any]:
+    def run(ctx: ExportContext) -> Any:
+        floor = ctx.today - timedelta(days=METRICS_RETENTION_DAYS)
+        start = max(ctx.start, floor)
+        if start > ctx.end:
+            raise QuerySkipped(f"Azure Monitor only keeps {METRICS_RETENTION_DAYS} days of metrics; the range is older")
+        if start != ctx.start:
+            ctx.note(name, f"Start clamped to {start} because Azure Monitor keeps {METRICS_RETENTION_DAYS} days.")
+        ctx.note(name, "FoundryModelEstimatedCost is a Preview metric: an estimate in USD for Foundry models, not billed "
+                       "cost. Cost Management remains the system of record.")
+        days = (ctx.end - start).days + 1
+        kwargs: dict[str, Any] = {
+            "start": datetime(start.year, start.month, start.day, tzinfo=timezone.utc),
+            "end": min(ctx.end_dt, datetime.now(timezone.utc)),
+            "by": by, "interval": "PT1H" if days <= 2 else "P1D",
+        }
+        rows = ctx.client.metrics.estimated_cost(ctx.account_id, **kwargs)
+        if ctx.project and FoundryMetrics.PROJECT_DIMENSION in by:
+            seen = {str(r.get(FoundryMetrics.PROJECT_DIMENSION.lower()) or "") for r in rows}
+            keep = {v for v in seen if project_matches(v, ctx.project)}
+            if not keep:
+                ctx.note(name, f"No ProjectId value matched project {ctx.project!r}; all projects are included. "
+                               f"Values seen: {sorted(seen)}")
+            else:
+                rows = [r for r in rows if str(r.get(FoundryMetrics.PROJECT_DIMENSION.lower()) or "") in keep]
+        return rows
+
+    return run
+
+
+def _cost_anomalies(ctx: ExportContext) -> Any:
+    tag = "agent.name" if ctx.project else "project"  # one project: compare its agents; otherwise compare projects
+    table = _cost_table(ctx, lambda q: q.group_by_tag(tag))
+    min_history = 7
+    days = (ctx.end - ctx.start).days + 1
+    ctx.note("cost_anomalies", f"Grouped by tag {tag!r}. Method: modified z-score above 3.5 against the median of the "
+                               f"previous 28 days; a day needs {min_history} earlier days. Days without a charge count as "
+                               "zero. Statistical outliers in your own data, not Azure's anomaly alerts.")
+    if days <= min_history:
+        ctx.note("cost_anomalies", f"The range is {days} day(s); at least {min_history + 1} are needed to judge a day.")
+        return []
+    return [asdict(a) for a in anomalies_from_table(table, group_key="TagValue")]
+
+
+def _budget_status(ctx: ExportContext) -> Any:
+    return [{**b.to_json(), "percent_used": b.percent_used(), "percent_forecast": b.percent_forecast(),
+             "notification_status": b.notification_status()} for b in ctx.client.cost.list_budgets()]
+
+
+def _effective_prices(ctx: ExportContext) -> Any:
+    from .operations.pricing import effective_discounts
+
+    start = datetime(ctx.start.year, ctx.start.month, ctx.start.day, tzinfo=timezone.utc)
+    if (ctx.end - ctx.start).days > COST_WINDOW_DAYS:
+        raise QuerySkipped(f"effective prices use one Cost Management query, which spans at most {COST_WINDOW_DAYS} days")
+    effective = ctx.client.cost.effective_prices(scope=ctx.account_id, start=start, end=ctx.end_dt)
+    billed = effective.to_price_sheet()
+    out: dict[str, Any] = {"meters": effective.to_records(), "skipped_meters": effective.skipped,
+                           "price_sheet_per_1m_tokens": billed.to_records()}
+    try:
+        out["discount_vs_retail"] = effective_discounts(billed, ctx.client.pricing.openai_price_sheet(ctx.location))
+    except (FinOpsError, ValueError) as exc:
+        ctx.note("effective_prices", f"Discount against retail not computed: {exc}")
+    ctx.note("effective_prices", "Derived from billed cost divided by billed quantity: it includes your discounts. A meter "
+                                 "with no billed usage in the range has no price.")
+    return out
+
+
+def _ptu_headroom(ctx: ExportContext) -> Any:
+    end = min(ctx.end, ctx.today)
+    hours = max(1, min((end - ctx.start).days + 1, METRICS_RETENTION_DAYS) * 24)
+    ctx.note("ptu_headroom", f"Utilisation covers the last {hours} hours up to now (the metric has no history beyond "
+                             f"{METRICS_RETENTION_DAYS} days).")
+    return ptu_headroom(ctx.client, ctx.account, hours=hours, location=ctx.location)
+
+
 def _need_rg(ctx: ExportContext) -> None:
     if not ctx.client.resource_group:
         raise QuerySkipped("needs --resource-group")
@@ -201,7 +281,13 @@ def _quota_models(ctx: ExportContext) -> Any:
 
 def _price_sheet(ctx: ExportContext) -> Any:
     sheet = ctx.client.pricing.openai_price_sheet(ctx.location)
-    return {"currency": sheet.currency, "prices_per_1m_tokens": {k: asdict(v) for k, v in sheet.prices.items()}}
+    out: dict[str, Any] = {"currency": sheet.currency, "source": "Azure Retail Prices API",
+                           "prices_per_1m_tokens": {k: asdict(v) for k, v in sheet.prices.items()}}
+    if ctx.discount_percent:
+        out["discount_percent_supplied_by_you"] = ctx.discount_percent
+        out["discounted_prices_per_1m_tokens"] = {
+            k: asdict(v) for k, v in sheet.scaled(ctx.discount_percent).prices.items()}
+    return out
 
 
 def _apim(ctx: ExportContext) -> Any:
@@ -240,11 +326,19 @@ QUERIES: list[Query] = [
     Query("cost_by_team", "Billed cost per day by your team tag", _group("tag", "team")),
     Query("cost_by_model", "Billed cost per day by model (meter sub-category)", _group("dim", "MeterSubCategory")),
     Query("cost_by_meter", "Billed cost per day by meter", _group("dim", "Meter")),
+    Query("cost_by_pricing_model", "Billed cost per day by pricing model (on-demand, reservation, savings plan)",
+          _group("dim", "PricingModel")),
+    Query("cost_by_charge_type", "Billed cost per day by charge type (usage, purchase, refund)",
+          _group("dim", "ChargeType")),
+    Query("cost_anomalies", "Days whose billed cost jumps above the group's own history", _cost_anomalies),
+    Query("effective_prices", "Effective prices per meter and per 1M tokens from your billed cost and quantity",
+          _effective_prices),
     Query("cost_forecast", "Cost forecast from today to the end date", _cost_forecast),
     Query("cost_dimensions", "Cost Management dimensions available at this scope",
           lambda c: c.client.cost.dimensions(scope=c.account_id)),
     Query("cost_exports", "Scheduled Cost Management exports", lambda c: c.client.cost.list_exports()),
     Query("budgets", "Cost Management budgets with current and forecast spend", _budgets),
+    Query("budget_status", "Which budget notification thresholds the reported spend has reached", _budget_status),
     # --- Foundry
     Query("cost_controls", "Foundry cost controls with estimated usage", _cost_controls),
     Query("foundry_account", "The Foundry resource", _foundry_account),
@@ -258,6 +352,11 @@ QUERIES: list[Query] = [
     Query("token_usage_by_deployment", "Tokens and requests by deployment (Azure Monitor)",
           _metrics("ModelDeploymentName", "token_usage_by_deployment")),
     Query("token_usage_by_model", "Tokens and requests by model (Azure Monitor)", _metrics("ModelName", "token_usage_by_model")),
+    Query("estimated_cost_by_project", "Near-real-time ESTIMATED cost per project (Preview metric)",
+          _estimated_cost((FoundryMetrics.PROJECT_DIMENSION,), "estimated_cost_by_project")),
+    Query("estimated_cost_by_deployment", "Near-real-time ESTIMATED cost per deployment (Preview metric)",
+          _estimated_cost((FoundryMetrics.DEPLOYMENT_DIMENSION,), "estimated_cost_by_deployment")),
+    Query("ptu_headroom", "Provisioned (PTU) deployments: capacity, utilisation, regional quota", _ptu_headroom),
     Query("metric_definitions", "Metrics the Foundry resource exposes",
           lambda c: c.client.metrics.definitions(c.account_id)),
     # --- Quota, tags, alerts, gateway, prices
@@ -294,7 +393,9 @@ _APIM = BROAD_READ | {"api management service reader role", "api management serv
 QUERY_ROLES: dict[str, frozenset[str] | None] = {
     "cost_daily_total": _COST, "cost_by_project": _COST, "cost_by_agent": _COST, "cost_by_deployment": _COST,
     "cost_by_team": _COST, "cost_by_model": _COST, "cost_by_meter": _COST, "cost_forecast": _COST,
-    "cost_dimensions": _COST, "cost_exports": _COST, "budgets": _COST,
+    "cost_dimensions": _COST, "cost_exports": _COST, "budgets": _COST, "budget_status": _COST,
+    "cost_by_pricing_model": _COST, "cost_by_charge_type": _COST, "cost_anomalies": _COST, "effective_prices": _COST,
+    "estimated_cost_by_project": _MONITOR, "estimated_cost_by_deployment": _MONITOR, "ptu_headroom": BROAD_READ,
     "cost_controls": _FOUNDRY, "foundry_account": _FOUNDRY, "foundry_projects": _FOUNDRY,
     "foundry_deployments": _FOUNDRY, "foundry_connections": _FOUNDRY,
     "foundry_event_grid_topics": BROAD_READ,
