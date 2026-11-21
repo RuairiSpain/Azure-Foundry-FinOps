@@ -17,7 +17,7 @@ that.
 ```bash
 git clone https://github.com/RuairiSpain/Azure-Foundry-FinOps.git
 cd Azure-Foundry-FinOps
-python -m venv .venv && source .venv/bin/activate        # Windows: .venv\Scripts\\activate
+python -m venv .venv && source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e "foundry-finops[dev,pandas]"              # SDK, pytest, ruff, mypy, type stubs
 pip install PyJWT cryptography                           # extra dependencies of the connector tests
 ```
