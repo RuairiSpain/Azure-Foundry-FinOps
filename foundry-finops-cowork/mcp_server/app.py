@@ -35,12 +35,12 @@ try:
 except ImportError:  # running from the monorepo checkout
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "foundry-finops" / "src"))
 
-from foundry_finops.errors import FinOpsError, HttpResponseError  # noqa: E402
-from foundry_finops.service import DemoService, LiveService, ReadOnlyError, Settings  # noqa: E402
+from foundry_finops.errors import FinOpsError, HttpResponseError
+from foundry_finops.service import DemoService, LiveService, ReadOnlyError, Settings
 
-from . import __version__  # noqa: E402
-from .auth import AuthConfig, AuthError, CredentialCache, TokenValidator, User  # noqa: E402
-from .tools import TOOLS, ToolArgumentError, call  # noqa: E402
+from . import __version__
+from .auth import AuthConfig, AuthError, CredentialCache, TokenValidator, User
+from .tools import TOOLS, ToolArgumentError, call
 
 log = logging.getLogger("finops.mcp")
 SUPPORTED_PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26")
@@ -85,7 +85,7 @@ class McpApp:
         if client is not None:
             try:
                 client.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.debug("Could not close client", exc_info=True)
 
     # ---------------------------------------------------------------- JSON-RPC
@@ -128,7 +128,7 @@ class McpApp:
                         text = (f"Azure denied access ({text}). The signed-in user needs a role such as Cost "
                                 "Management Reader or Foundry User on this scope.")
                     result = _tool_error(text)
-                except Exception as exc:  # noqa: BLE001 - report as a tool failure the model can read, not a protocol error
+                except Exception as exc:
                     log.exception("Tool %s failed", name)
                     result = _tool_error(f"Unexpected error ({type(exc).__name__}). See the server log for details.")
                 finally:

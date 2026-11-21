@@ -7,7 +7,6 @@ from http.server import ThreadingHTTPServer
 import jwt
 import requests
 from cryptography.hazmat.primitives.asymmetric import rsa
-
 from foundry_finops.service import LiveService, Settings
 from mcp_server.app import McpApp, make_handler
 from mcp_server.auth import AuthConfig, CredentialCache, TokenValidator

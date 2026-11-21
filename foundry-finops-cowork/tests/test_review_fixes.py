@@ -5,7 +5,6 @@ import json
 import unittest
 
 import requests
-
 from foundry_finops.service import Settings
 from mcp_server.app import McpApp
 from mcp_server.auth import AuthConfig, CredentialCache, TokenValidator, User
@@ -83,7 +82,7 @@ class ClientLifecycleTests(unittest.TestCase):
         class Fake:
             settings = Settings(subscription_id="s")
 
-            class fo:  # noqa: N801
+            class fo:
                 @staticmethod
                 def close():
                     closed.append(True)
