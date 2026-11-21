@@ -229,13 +229,15 @@ Built, with tests:
 
 | Live reader | `queries.usage_by_caller`, `LiveBackend.usage_by_caller` | Reads per-caller usage from Log Analytics (`PORTAL_LOGS_TARGET`). Two sources: `client` (the SDK's `llm.usage` records; estimated cost; its fields are the ones the tracker writes, covered by a test) and `gateway` (policy trace records joined to the gateway LLM log by request ID; tokens only). **The gateway query is untested against a real instance**: table and column names come from Microsoft's documentation and must be checked. With no target configured the endpoint answers 501 and names the setting. Tests use a fake `kql`; nothing has run against Azure. |
 | Test deployment | `examples/apim/deploy/` | Bicep template (workspace, Application Insights, API Management with a managed identity, the policy on one chat-completions API, diagnostic settings) plus `deploy.sh` and `smoke-test.sh`. The template compiles (checked in CI) and the scripts parse; **neither has been run against a real subscription**. The smoke test sends a call with no token, one with a bad token and one with a real token, then runs the portal's gateway query. |
+| Pools | `usage_pools` tables (schema 3), `/api/usage-pools`, `usage-split?pool=` | A pool is a named set of agents **or** deployments (one basis for all pools, no value in two pools, so cost is never shared out twice). Each pool's cost is the billed cost of its members; it is split by the usage inside the pool, with its own spread-or-hold setting that a request can override. The report gives each pool, totals per cost centre, the pooled cost and the unpooled cost (not split here). Usage records now carry the agent and deployment. Members are matched to usage by exactly the billing name: an agent recorded under another name (the gateway source records the caller application's client ID) finds no usage, and the pool says so (`matched_usage: false`, all of its cost unattributed). Tools and projects are not pool members: there is no tool cost dimension, and usage records carry no project. |
 | Measure | `services.usage_split` | Estimated cost when the records carry it; tokens otherwise, and the report says which. Tokens ignore price differences between models. |
 
 Not built yet:
 
 - **Bicep settings.** `PORTAL_LOGS_TARGET` and `PORTAL_USAGE_SOURCE` are set by hand (see `portal/docs/DEPLOY.md`).
-- **Pools.** The split uses the whole Foundry resource's cost. Pools of chosen agents, deployments and tools are not
-  built.
+- **Pools of tools, and pools that mix agents and deployments.**
+- **Agent names that match billing.** A gateway agent ID (client ID) rarely equals the `agent.name` billing tag; a mapping
+  between them, or a deployment-based pool, is the workaround today.
 - **Idle capacity.** PTU cost with no per-call driver is not shown on its own line.
 - **Portal pages.** There is no screen for the report or the department mapping; the API is there.
 - **Publishing to Azure Cost Management** (4.6), and the preview SDK check.

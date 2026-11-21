@@ -78,6 +78,13 @@ class DepartmentMapIn(BaseModel):
     cost_centre_id: int
 
 
+class PoolIn(BaseModel):
+    name: str
+    match_type: str
+    values: list[str]
+    unattributed: str = "proportional"
+
+
 class NotificationIn(BaseModel):
     name: str
     scope_type: str = "all"
@@ -363,9 +370,41 @@ def create_app(
         return c.views.cost_centre_report(basis, days)
 
     @app.get("/api/cost-centres/usage-split")
-    def usage_split(days: int = Query(30, ge=1, le=90), unattributed: str = "proportional",
+    def usage_split(days: int = Query(30, ge=1, le=90), unattributed: str | None = None, pool: int | None = None,
                     c: Ctx = Depends(admin)) -> dict[str, Any]:
-        return c.views.usage_split(days, unattributed, directory_)
+        return c.views.usage_split(days, unattributed, directory_, pool)
+
+    @app.get("/api/usage-pools")
+    def list_pools(c: Ctx = Depends(admin)) -> list[dict[str, Any]]:
+        return store.list_pools()
+
+    @app.post("/api/usage-pools")
+    def create_pool(body: PoolIn, c: Ctx = Depends(admin)) -> dict[str, Any]:
+        try:
+            out = store.save_pool(body.name, body.match_type, body.values, body.unattributed)
+        except Exception as exc:   # a duplicate name, an unknown basis, or a value already in another pool
+            raise HTTPException(400, str(exc)) from exc
+        store.audit(c.principal.oid, c.principal.upn, "usage_pool.create", out["name"],
+                    {"match_type": out["match_type"], "values": out["values"]})
+        return out
+
+    @app.put("/api/usage-pools/{pool_id}")
+    def update_pool(pool_id: int, body: PoolIn, c: Ctx = Depends(admin)) -> dict[str, Any]:
+        if store.get_pool(pool_id) is None:
+            raise HTTPException(404, "No such pool")
+        try:
+            out = store.save_pool(body.name, body.match_type, body.values, body.unattributed, pool_id)
+        except Exception as exc:
+            raise HTTPException(400, str(exc)) from exc
+        store.audit(c.principal.oid, c.principal.upn, "usage_pool.update", out["name"],
+                    {"match_type": out["match_type"], "values": out["values"]})
+        return out
+
+    @app.delete("/api/usage-pools/{pool_id}")
+    def delete_pool(pool_id: int, c: Ctx = Depends(admin)) -> dict[str, bool]:
+        ok = store.delete_pool(pool_id)
+        store.audit(c.principal.oid, c.principal.upn, "usage_pool.delete", str(pool_id))
+        return {"deleted": ok}
 
     @app.get("/api/cost-centres/department-map")
     def department_map(c: Ctx = Depends(admin)) -> list[dict[str, Any]]:

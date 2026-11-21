@@ -59,9 +59,14 @@ class DemoBackend(DemoService):
     """Illustrative data. Writes change the in-memory demo store."""
 
     def usage_by_caller(self, days: int) -> list[dict[str, Any]]:
-        total = sum(r["cost"] for r in self.cost_by_project_agent(days))
-        return [{"caller_oid": oid, "caller_type": kind, "cost": round(total * share, 4)}
-                for oid, kind, share in DEMO_CALLERS]
+        """Each agent's cost shared out between the demo callers, with the agent and its model deployment on every row."""
+        out = []
+        for row in self.cost_by_project_agent(days):
+            deployment = demo_data.AGENT_MODEL.get(row["agent"], "")
+            for oid, kind, share in DEMO_CALLERS:
+                out.append({"caller_oid": oid, "caller_type": kind, "agent": row["agent"], "deployment": deployment,
+                            "cost": round(row["cost"] * share, 4)})
+        return out
 
     def list_projects(self) -> list[dict[str, Any]]:
         return [{"name": n, "display_name": n, "team": m["team"]} for n, m in demo_data.PROJECTS.items()]
@@ -109,8 +114,9 @@ class LiveBackend(LiveService):
     def usage_by_caller(self, days: int) -> list[dict[str, Any]]:
         """Usage per caller over the last ``days`` days, read from Log Analytics (``PORTAL_LOGS_TARGET``).
 
-        One record per caller: ``caller_oid`` (empty when no identity was recorded), ``caller_type``, ``cost`` (estimated;
-        ``None`` for the gateway source, which has tokens only), ``tokens`` and ``calls``. Nothing is invented: when the
+        One record per caller, agent and deployment: ``caller_oid`` (empty when no identity was recorded), ``caller_type``,
+        ``agent``, ``deployment``, ``cost`` (estimated; ``None`` for the gateway source, which has tokens only),
+        ``tokens`` and ``calls``. Nothing is invented: when the
         source isn't set up the method says what is missing.
         """
         target = self.settings.logs_target
@@ -128,6 +134,7 @@ class LiveBackend(LiveService):
         for row in table["rows"]:
             rec = dict(zip(names, row, strict=False))
             out.append({"caller_oid": str(rec.get("oid") or ""), "caller_type": str(rec.get("kind") or "") or "unknown",
+                        "agent": str(rec.get("agent") or ""), "deployment": str(rec.get("deployment") or ""),
                         "cost": None if rec.get("cost") is None else float(rec["cost"]),
                         "tokens": int(rec.get("tokens") or 0), "calls": int(rec.get("calls") or 0)})
         return out

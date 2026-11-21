@@ -89,11 +89,13 @@ def test_an_existing_version_1_database_gains_the_new_tables(tmp_path):
     path = str(tmp_path / "old.db")
     Store(path)  # creates the current schema
     con = sqlite3.connect(path)
-    con.executescript("DROP TABLE department_map; DROP TABLE department_snapshot; PRAGMA user_version = 1;")
+    con.executescript("DROP TABLE department_map; DROP TABLE department_snapshot; DROP TABLE usage_pool_members; "
+                      "DROP TABLE usage_pools; PRAGMA user_version = 1;")
     con.close()
     store = Store(path)
-    assert store.list_department_map() == []
+    assert store.list_department_map() == [] and store.list_pools() == []
     store.snapshot_departments("2026-11-21", {"o": "Risk"})
+    store.save_pool("p", "agent", ["a"])
 
 
 # ---------------------------------------------------------------- the live reader
@@ -113,8 +115,8 @@ class _Live:
 
 
 GATEWAY_TABLE = {
-    "columns": [{"name": n, "type": "string"} for n in ("oid", "kind", "tokens", "calls", "cost")],
-    "rows": [["o1", "user", 900, 9, None], ["", "unknown", 100, 1, None]],
+    "columns": [{"name": n, "type": "string"} for n in ("oid", "kind", "agent", "deployment", "tokens", "calls", "cost")],
+    "rows": [["o1", "user", "care-triage", "gpt-5.4-mini", 900, 9, None], ["", "unknown", "", "gpt-5.4-mini", 100, 1, None]],
 }
 
 
@@ -123,18 +125,21 @@ def test_the_live_reader_runs_the_gateway_query_and_shapes_the_rows():
     out = live.backend.usage_by_caller(30)
     assert live.calls[0][1] == "P30D" and "ApiManagementGatewayLlmLog" in live.calls[0][0]
     assert out == [
-        {"caller_oid": "o1", "caller_type": "user", "cost": None, "tokens": 900, "calls": 9},
-        {"caller_oid": "", "caller_type": "unknown", "cost": None, "tokens": 100, "calls": 1},
+        {"caller_oid": "o1", "caller_type": "user", "agent": "care-triage", "deployment": "gpt-5.4-mini",
+         "cost": None, "tokens": 900, "calls": 9},
+        {"caller_oid": "", "caller_type": "unknown", "agent": "", "deployment": "gpt-5.4-mini",
+         "cost": None, "tokens": 100, "calls": 1},
     ]
 
 
 def test_the_live_reader_can_read_the_clients_records_instead():
-    table = {"columns": [{"name": n, "type": "string"} for n in ("oid", "kind", "cost", "tokens", "calls")],
-             "rows": [["o1", "user", 4.5, 300, 3]]}
+    table = {"columns": [{"name": n, "type": "string"} for n in ("oid", "kind", "agent", "deployment", "cost", "tokens", "calls")],
+             "rows": [["o1", "user", "a1", "m1", 4.5, 300, 3]]}
     live = _Live(logs_target="/subscriptions/s/resourceGroups/rg/providers/microsoft.insights/components/ai",
                  usage_source="client", table=table)
     assert live.backend.usage_by_caller(7) == [
-        {"caller_oid": "o1", "caller_type": "user", "cost": 4.5, "tokens": 300, "calls": 3}]
+        {"caller_oid": "o1", "caller_type": "user", "agent": "a1", "deployment": "m1", "cost": 4.5, "tokens": 300,
+         "calls": 3}]
     assert live.calls[0][1] == "P7D" and "finops.caller_oid" in live.calls[0][0]
 
 
@@ -182,3 +187,105 @@ def test_usage_source_must_be_known():
     with pytest.raises(ValueError, match="PORTAL_USAGE_SOURCE"):
         PortalSettings(mode="demo", usage_source="spreadsheet").validate()
     assert PortalSettings.from_env({"PORTAL_LOGS_TARGET": "w", "PORTAL_USAGE_SOURCE": "CLIENT"}).usage_source == "client"
+
+
+# --------------------------------------------------------------------------- pools
+SUPPORT_AGENTS = ["care-triage", "refund-assistant", "kb-answers"]   # the customer-care project's agents in the demo data
+
+
+def make_pool(client, name="Support agents", match_type="agent", values=None, **extra):
+    body = {"name": name, "match_type": match_type, "values": values or SUPPORT_AGENTS, **extra}
+    return client.post("/api/usage-pools", headers=ALICE, json=body)
+
+
+def test_a_pool_splits_only_its_own_cost_by_the_usage_inside_it(client):
+    created = make_pool(client)
+    assert created.status_code == 200 and created.json()["values"] == sorted(SUPPORT_AGENTS)
+    report = client.get("/api/cost-centres/usage-split", headers=ALICE).json()
+    assert len(report["pools"]) == 1
+    pool = report["pools"][0]
+    assert pool["name"] == "Support agents" and pool["matched_usage"] is True
+    assert round(sum(r["allocated"] for r in pool["rows"]), 2) == pool["total"] > 0
+    assert report["pooled_cost"] == pool["total"]
+    assert report["unpooled_cost"] > 0                       # the other projects' agents are not in the pool
+    assert {t["code"]: t["allocated"] for t in report["totals"]} == {r["code"]: r["allocated"] for r in pool["rows"]}
+    # the demo callers are the same for every agent, so the pool's coverage matches the whole resource's
+    assert pool["coverage_percent"] == 60.0
+
+
+def test_a_pool_can_be_on_deployments(client):
+    assert make_pool(client, "Mini model", "deployment", ["gpt-5.4-mini"]).status_code == 200
+    pool = client.get("/api/cost-centres/usage-split", headers=ALICE).json()["pools"][0]
+    assert pool["match_type"] == "deployment" and pool["total"] > 0 and pool["matched_usage"] is True
+
+
+def test_each_pool_has_its_own_unattributed_setting_and_the_request_can_override_it(client):
+    make_pool(client, unattributed="hold")
+    held = client.get("/api/cost-centres/usage-split", headers=ALICE).json()["pools"][0]
+    assert held["mode"] == "hold" and any(r["code"] == "(unattributed)" for r in held["rows"])
+    spread = client.get("/api/cost-centres/usage-split?unattributed=proportional", headers=ALICE).json()["pools"][0]
+    assert spread["mode"] == "proportional" and not any(r["code"] == "(unattributed)" for r in spread["rows"])
+
+
+def test_one_pool_can_be_asked_for_by_id(client):
+    a = make_pool(client).json()
+    b = make_pool(client, "Risk agents", values=["fraud-case-review", "aml-screening"]).json()
+    only_b = client.get(f"/api/cost-centres/usage-split?pool={b['id']}", headers=ALICE).json()
+    assert [p["name"] for p in only_b["pools"]] == ["Risk agents"]
+    assert a["id"] != b["id"]
+    assert client.get("/api/cost-centres/usage-split?pool=9999", headers=ALICE).status_code == 404
+
+
+def test_a_pool_whose_members_match_no_usage_says_so(client, monkeypatch):
+    from foundry_finops_portal.backends import DemoBackend
+
+    monkeypatch.setattr(DemoBackend, "usage_by_caller", lambda self, days: [
+        {"caller_oid": "22222222-2222-2222-2222-222222222222", "caller_type": "user", "agent": "some-client-id",
+         "deployment": "gpt-5.4", "cost": 10.0}])
+    make_pool(client)
+    pool = client.get("/api/cost-centres/usage-split", headers=ALICE).json()["pools"][0]
+    assert pool["matched_usage"] is False and pool["coverage_percent"] == 0.0
+    assert [(r["code"], r["allocated"]) for r in pool["rows"]] == [("(unattributed)", pool["total"])]
+
+
+def test_pools_cannot_overlap_or_mix_bases(client):
+    assert make_pool(client).status_code == 200
+    r = make_pool(client, "Overlap", values=["care-triage", "aml-screening"])
+    assert r.status_code == 400 and "already in pool" in r.json()["detail"]
+    r = make_pool(client, "Models", "deployment", ["gpt-5.4"])
+    assert r.status_code == 400 and "same basis" in r.json()["detail"]
+    assert make_pool(client, "Support agents", values=["x"]).status_code == 400      # the name is taken
+    for bad in ({"name": " ", "values": ["x"]}, {"name": "n", "values": []}, {"name": "n", "match_type": "tag"},
+                {"name": "n", "unattributed": "spread"}):
+        body = {"name": "n", "match_type": "agent", "values": ["x"], **bad}
+        assert client.post("/api/usage-pools", headers=ALICE, json=body).status_code == 400, bad
+
+
+def test_a_pool_can_be_changed_and_deleted(client):
+    pool = make_pool(client).json()
+    body = {"name": "Support", "match_type": "deployment", "values": ["gpt-5.4-mini"], "unattributed": "hold"}
+    changed = client.put(f"/api/usage-pools/{pool['id']}", headers=ALICE, json=body)
+    assert changed.status_code == 200 and changed.json()["match_type"] == "deployment"   # the only pool may change basis
+    assert client.put("/api/usage-pools/9999", headers=ALICE, json=body).status_code == 404
+    assert client.delete(f"/api/usage-pools/{pool['id']}", headers=ALICE).json() == {"deleted": True}
+    assert client.get("/api/usage-pools", headers=ALICE).json() == []
+    assert client.get("/api/cost-centres/usage-split", headers=ALICE).json()["pools"] == []   # back to the whole resource
+
+
+def test_pools_are_for_administrators(client):
+    for who in (BOB, CAROL):
+        assert client.get("/api/usage-pools", headers=who).status_code == 403
+        assert client.post("/api/usage-pools", headers=who,
+                           json={"name": "n", "match_type": "agent", "values": ["x"]}).status_code == 403
+
+
+def test_a_version_2_database_gains_the_pool_tables(tmp_path):
+    import sqlite3
+
+    path = str(tmp_path / "v2.db")
+    Store(path)
+    con = sqlite3.connect(path)
+    con.executescript("DROP TABLE usage_pool_members; DROP TABLE usage_pools; PRAGMA user_version = 2;")
+    con.close()
+    store = Store(path)
+    assert store.save_pool("p", "deployment", ["gpt-5.4"])["values"] == ["gpt-5.4"]

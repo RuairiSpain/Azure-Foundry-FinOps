@@ -73,9 +73,12 @@ traces
 | where message == "llm.usage"
 | extend oid = tostring(customDimensions["finops.caller_oid"]),
          kind = tostring(customDimensions["finops.caller_type"]),
+         agent = iff(isnotempty(tostring(customDimensions["finops.agent_id"])),
+                     tostring(customDimensions["finops.agent_id"]), tostring(customDimensions["finops.agent"])),
+         deployment = tostring(customDimensions["model"]),
          cost = todouble(customDimensions["cost"]),
          tokens = tolong(customDimensions["total_tokens"])
-| summarize cost = sum(cost), tokens = sum(tokens), calls = count() by oid, kind
+| summarize cost = sum(cost), tokens = sum(tokens), calls = count() by oid, kind, agent, deployment
 """
 
 _USAGE_CLIENT_WORKSPACE = """
@@ -83,25 +86,29 @@ AppTraces
 | where Message == "llm.usage"
 | extend oid = tostring(Properties["finops.caller_oid"]),
          kind = tostring(Properties["finops.caller_type"]),
+         agent = iff(isnotempty(tostring(Properties["finops.agent_id"])),
+                     tostring(Properties["finops.agent_id"]), tostring(Properties["finops.agent"])),
+         deployment = tostring(Properties["model"]),
          cost = todouble(Properties["cost"]),
          tokens = tolong(Properties["total_tokens"])
-| summarize cost = sum(cost), tokens = sum(tokens), calls = count() by oid, kind
+| summarize cost = sum(cost), tokens = sum(tokens), calls = count() by oid, kind, agent, deployment
 """
 
 #: UNTESTED against a live gateway: the table and column names are what Microsoft documents for the gateway's LLM log and
 #: Application Insights traces in a workspace, and must be checked on your instance. Tokens only: the gateway log has no
-#: price, so ``cost`` is null.
+#: price, so ``cost`` is null. ``DeploymentName`` is one of the unverified names.
 _USAGE_GATEWAY_WORKSPACE = """
 let who = AppTraces
     | where Message has "caller_oid"
     | extend rec = parse_json(Message)
     | where isnotempty(tostring(rec.request_id))
-    | project request_id = tostring(rec.request_id), oid = tostring(rec.caller_oid), kind = tostring(rec.caller_type);
+    | project request_id = tostring(rec.request_id), oid = tostring(rec.caller_oid), kind = tostring(rec.caller_type),
+              agent = tostring(rec.agent_id);
 ApiManagementGatewayLlmLog
-| extend request_id = tostring(CorrelationId)
+| extend request_id = tostring(CorrelationId), deployment = tostring(DeploymentName)
 | join kind=leftouter who on request_id
-| extend oid = coalesce(oid, ""), kind = coalesce(kind, "unknown")
-| summarize tokens = sum(tolong(TotalTokens)), calls = count() by oid, kind
+| extend oid = coalesce(oid, ""), kind = coalesce(kind, "unknown"), agent = coalesce(agent, "")
+| summarize tokens = sum(tolong(TotalTokens)), calls = count() by oid, kind, agent, deployment
 | extend cost = real(null)
 """
 
@@ -112,7 +119,7 @@ def is_app_insights_target(target: str) -> bool:
 
 
 def usage_by_caller(source: str, target: str) -> str:
-    """KQL that returns one row per caller: ``oid, kind, cost, tokens, calls``. The time range goes in the request's timespan.
+    """KQL that returns one row per caller, agent and deployment: ``oid, kind, agent, deployment, cost, tokens, calls``. The time range goes in the request's timespan.
 
     ``target`` is the ``logs_target`` the query will run against: an Application Insights resource ID uses the classic
     table names, a Log Analytics workspace uses ``AppTraces``. The gateway source needs a workspace that holds both the

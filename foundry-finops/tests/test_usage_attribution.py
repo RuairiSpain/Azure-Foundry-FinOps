@@ -117,7 +117,7 @@ class UsageQueryTests(unittest.TestCase):
         self.assertIn("AppTraces", workspace)
         self.assertIn('Properties["finops.caller_oid"]', workspace)
         for q in (classic, workspace):                   # the same columns either way
-            self.assertIn("by oid, kind", q)
+            self.assertIn("by oid, kind, agent, deployment", q)
 
     def test_gateway_source_joins_the_token_log_and_needs_a_workspace(self):
         from foundry_finops import queries
@@ -126,6 +126,7 @@ class UsageQueryTests(unittest.TestCase):
         self.assertIn("ApiManagementGatewayLlmLog", q)
         self.assertIn("leftouter", q)                    # calls with no trace record stay, as unknown
         self.assertIn('coalesce(kind, "unknown")', q)
+        self.assertIn("DeploymentName", q)
         with self.assertRaises(ValueError):
             queries.usage_by_caller("gateway", self.APP_INSIGHTS)
 
