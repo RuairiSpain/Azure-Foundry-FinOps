@@ -10,7 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -294,6 +294,16 @@ class CostControl(ArmResource):
             raise ValueError("tokenType filters apply only to Tokens budgets")
         if len(self.filters.get("sessionId", [])) > 20:
             raise ValueError("A session filter accepts up to 20 session IDs")
+        for fname, values in self.filters.items():
+            if any(not str(v).strip() for v in values):
+                raise ValueError(f"Values of the {fname} filter must be non-blank strings")
+        bad_types = [v for v in self.filters.get("tokenType", []) if v not in ("input", "output")]
+        if bad_types:
+            raise ValueError(f"tokenType accepts input or output, not {bad_types}")
+        if self.project and "project" in self.filters and list(self.filters["project"]) != [self.project]:
+            raise ValueError("A project-owned cost control can select only its own project")
+        if len(json.dumps(self.filters)) > 32 * 1024:
+            raise ValueError("The serialized filters must not exceed 32 KiB")
         if self.project and self.sharing == BudgetSharing.PER_PROJECT:
             raise ValueError("Only a Foundry resource's cost controls can use a per-project budget")
         for t in (*self.alerts, *self.blocks):
@@ -443,6 +453,19 @@ def _enum(cls: Any, value: Any, default: Any) -> Any:
         return default
 
 
+def _num(value: Any) -> float | None:
+    """A number the service may send as a string (token budgets), or ``None`` when absent."""
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _whole(value: Any) -> int | None:
+    n = _num(value)
+    return int(n) if n is not None else None
+
+
 def _pct(t: Threshold, amount: float) -> float:
     return t.threshold if t.threshold_type == ThresholdType.PERCENTAGE else t.threshold / amount * 100
 
@@ -469,6 +492,15 @@ class CostControlAlertEvent:
     #: The cost control's own start and end dates (UTC), when the event carries them.
     start_date: str | None = None
     end_date: str | None = None
+    #: ``estimate`` for a spending budget (priced as in "How cost controls price usage"), ``usage`` for a token budget.
+    cost_basis: str | None = None
+    #: Cost (spending budget) or tokens (token budget) of the request that triggered the event.
+    call_cost: float | None = None
+    tokens_consumed: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
     data: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def dedupe_key_for(self, per: str | None = None) -> tuple[Any, ...]:
@@ -516,8 +548,144 @@ class CostControlAlertEvent:
             deployment_name=d.get("deploymentName"),
             start_date=d.get("startDate"),
             end_date=d.get("endDate"),
+            cost_basis=d.get("costBasis"),
+            call_cost=_num(d.get("callCost")),
+            tokens_consumed=_num(d.get("tokensConsumed")),
+            input_tokens=_whole(d.get("inputTokens")),
+            output_tokens=_whole(d.get("outputTokens")),
+            cached_tokens=_whole(d.get("cachedTokens")),
+            reasoning_tokens=_whole(d.get("reasoningTokens")),
             data=d,
         )
+
+
+def applies_to_project(cc: CostControl, project: str) -> bool:
+    """``True`` if ``cc`` can count usage in ``project``: the project's own cost controls, and a Foundry resource's
+    cost control that covers every project or has a project filter naming it."""
+    if cc.project:
+        return cc.project == project
+    names = cc.filters.get("project")
+    return not names or project in names
+
+
+@dataclass(frozen=True)
+class ProjectBudget:
+    """What the project's **Cost** tab shows in its *Project budget* card."""
+
+    #: The spending budget for the whole project (the lowest when several apply), or ``None``.
+    budget: CostControl | None
+    #: How many whole-project spending budgets apply ("Lowest of N cost controls").
+    count: int
+    #: Budgets per agent or per session, which the card counts separately.
+    per_agent_or_session: int
+
+
+def project_budget(cost_controls: Iterable[CostControl], project: str) -> ProjectBudget:
+    """Pick the project budget the way the Foundry portal's card does.
+
+    A whole-project budget is a **Spending** cost control that applies to the project and isn't narrowed to model
+    deployments, agents or sessions, and isn't a token budget. Resource-wide budgets are not project budgets: a
+    resource's cost control counts only when a project filter names the project. Budgets per agent or per session are
+    counted separately. With several, the lowest amount is returned (the docs call it "Lowest of N").
+    """
+    whole: list[CostControl] = []
+    split = 0
+    for cc in cost_controls:
+        if cc.category != BudgetCategory.COST or not applies_to_project(cc, project):
+            continue
+        if not cc.project and project not in cc.filters.get("project", []):
+            continue  # a resource-wide budget isn't the project's budget
+        if any(k in cc.filters for k in ("deployment", "agent", "sessionId")):
+            continue
+        if cc.sharing in (BudgetSharing.PER_AGENT, BudgetSharing.PER_SESSION):
+            split += 1
+        elif cc.sharing == BudgetSharing.SHARED:
+            whole.append(cc)
+    return ProjectBudget(min(whole, key=lambda c: c.amount, default=None), len(whole), split)
+
+
+class AlertDeduper:
+    """Notify once per threshold and period although Foundry sends an alert event for every request over it.
+
+    ``store`` is anything with ``__contains__`` and ``add`` (a ``set``, or a wrapper over Redis or Table Storage); the
+    default is an in-memory set that is cleared when it reaches ``max_size`` so a long-lived process can't grow it
+    without bound.
+
+        deduper = AlertDeduper()
+        if deduper.first_time(event, per="agent"):
+            notify(event)
+    """
+
+    def __init__(self, store: Any = None, *, max_size: int = 10_000) -> None:
+        self._store = store if store is not None else set()
+        self._max = max_size
+
+    def first_time(self, event: CostControlAlertEvent, per: str | None = None) -> bool:
+        """``True`` the first time this event's key is seen, then ``False`` for every repeat."""
+        key = event.dedupe_key_for(per)
+        if key in self._store:
+            return False
+        if isinstance(self._store, set) and len(self._store) >= self._max:
+            self._store.clear()
+        self._store.add(key)
+        return True
+
+
+# ----------------------------------------------------------------- states
+class CostControlState(_StrEnum):
+    """The states the Foundry portal shows in the **State** column of a cost control list.
+
+    ``Needs setup`` (the cost control doesn't cover any usage yet) isn't modelled: it needs knowledge of which
+    projects, deployments or agents exist and have traffic, which the cost control definition doesn't hold.
+    """
+
+    SCHEDULED = "Scheduled"  #: the start date is in the future
+    ON_TRACK = "On track"  #: usage is below the Near threshold point
+    NEAR_THRESHOLD = "Near threshold"  #: usage reached the lowest alert threshold, or 80 % without an alert
+    LIMIT_REACHED = "Limit reached"  #: usage reached the budget or the Block threshold
+    EXPIRED = "Expired"  #: the end date has passed
+    ACTIVE = "Active"  #: in effect, but usage can't be read ("Usage unknown"); doesn't mean requests are blocked
+
+
+@dataclass(frozen=True)
+class CostControlStatus:
+    state: CostControlState
+    #: ``True`` when the limit is reached but the cost control has no Block action, so requests continue.
+    over_budget: bool = False
+    percent_used: float | None = None
+
+
+def evaluate_cost_control(
+    *,
+    amount: float,
+    usage: float | None,
+    alert_percents: Sequence[float] = (),
+    block_percents: Sequence[float] = (),
+    start: str | datetime | None = None,
+    end: str | datetime | None = None,
+    now: datetime | None = None,
+) -> CostControlStatus:
+    """State of a cost control, as defined in the Foundry docs ("Cost control states").
+
+    ``usage`` is in the budget's unit and may be ``None`` when it can't be read. Thresholds are percentages of the
+    budget. With several alert or block thresholds the lowest one is reached first.
+    """
+    now = now or datetime.now(timezone.utc)
+    begins = _parse_utc(iso_utc(start)) if isinstance(start, str) and start else start if isinstance(start, datetime) else None
+    ends = _parse_utc(iso_utc(end)) if isinstance(end, str) and end else end if isinstance(end, datetime) else None
+    if ends is not None and now >= ends:
+        return CostControlStatus(CostControlState.EXPIRED)
+    if begins is not None and now < begins:
+        return CostControlStatus(CostControlState.SCHEDULED)
+    if usage is None or not amount:
+        return CostControlStatus(CostControlState.ACTIVE)
+    pct = usage / amount * 100
+    block = min(block_percents, default=None)
+    near = min(alert_percents, default=80.0)
+    if pct >= 100 or (block is not None and pct >= block):
+        return CostControlStatus(CostControlState.LIMIT_REACHED, over_budget=block is None, percent_used=round(pct, 1))
+    state = CostControlState.NEAR_THRESHOLD if pct >= near else CostControlState.ON_TRACK
+    return CostControlStatus(state, percent_used=round(pct, 1))
 
 
 # ========================================================== Cost Management budgets
@@ -870,6 +1038,8 @@ class FoundryAccount(ArmResource):
     sku: str | None = None
     endpoint: str | None = None
     tags: dict[str, str] = field(default_factory=dict)
+    #: The Application Insights connection (``Usage data``) that records usage for the account's cost controls.
+    app_insights_connection_id: str | None = None
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> FoundryAccount:
@@ -878,6 +1048,7 @@ class FoundryAccount(ArmResource):
             d.get("id"), d.get("name"), d.get("type"), dict(d),
             d.get("location"), d.get("kind"), (d.get("sku") or {}).get("name"),
             p.get("endpoint"), dict(d.get("tags") or {}),
+            (p.get("costControlConnections") or {}).get("appInsightsConnectionId"),
         )
 
 

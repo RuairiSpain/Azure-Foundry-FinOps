@@ -19,6 +19,7 @@ from .operations import (
     FoundryOperations,
     LogsOperations,
     MetricsOperations,
+    PolicyOperations,
     PricingOperations,
     QuotaOperations,
     TagOperations,
@@ -61,6 +62,7 @@ class FinOpsClient:
     ``alerts``             Metric alerts, log alerts, action groups
     ``apim``               APIM products, subscriptions, token-limit/metric policies
     ``pricing``            Retail prices and token cost estimates
+    ``policy``             Azure Policy compliance (the fleet's policy violations)
     ``authorization``      The signed-in identity's role assignments and role definitions
     =====================  ==========================================================
     """
@@ -138,6 +140,10 @@ class FinOpsClient:
     @cached_property
     def authorization(self) -> AuthorizationOperations:
         return self._ops(AuthorizationOperations)  # type: ignore[no-any-return]
+
+    @cached_property
+    def policy(self) -> PolicyOperations:
+        return self._ops(PolicyOperations)  # type: ignore[no-any-return]
 
     @cached_property
     def pricing(self) -> PricingOperations:

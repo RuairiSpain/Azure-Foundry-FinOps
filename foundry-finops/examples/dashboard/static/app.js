@@ -299,7 +299,7 @@ function cmdbar(items) {
 }
 const writable = () => !state.info?.read_only;
 const badgeFor = (stateText) => {
-  const cls = { "On track": "ok", "Near threshold": "warn", "Limit reached": "bad", "Over budget": "bad", Succeeded: "ok", active: "ok", published: "ok", suspended: "warn", notPublished: "warn" }[stateText] || "info";
+  const cls = { "On track": "ok", "Near threshold": "warn", "Limit reached": "bad", "Over budget": "bad", Active: "ok", Scheduled: "warn", Expired: "warn", Succeeded: "ok", active: "ok", published: "ok", suspended: "warn", notPublished: "warn" }[stateText] || "info";
   return `<span class="badge ${cls}">${esc(stateText ?? "–")}</span>`;
 };
 const progress = (pct) => {
@@ -341,7 +341,7 @@ async function pageOverview() {
   ccCard.appendChild(Grid({ name: "cost-controls-status", rows: [...ccs].sort((a, b) => (b.percent_used ?? -1) - (a.percent_used ?? -1)).slice(0, 6), cols: [
     { key: "name", label: "Cost control" }, { key: "category", label: "Type" },
     { key: "percent_used", label: "Used (estimated)", render: (r) => progress(r.percent_used) },
-    { key: "state", label: "State", render: (r) => badgeFor(r.state) }] }));
+    { key: "state", label: "State", render: (r) => badgeFor(r.state) + (r.over_budget ? " <span class=\"muted\">no block, requests continue</span>" : "") }] }));
   const qCard = h(`<div class="card"><h3><span>Quota use</span><a href="#/quota">Manage</a></h3></div>`);
   qCard.appendChild(Grid({ name: "quota", rows: quota, cols: [
     { key: "display_name", label: "Quota" }, { key: "current_value", label: "Used", num: true },
@@ -677,7 +677,7 @@ async function pageCostControls() {
       { key: "start_date", label: "Start", render: (r) => esc(fmt.date(r.start_date)) },
       { key: "end_date", label: "End", render: (r) => esc(fmt.date(r.end_date)) },
       { key: "percent_used", label: "Closest to limit (est.)", render: (r) => progress(r.percent_used) },
-      { key: "state", label: "State", render: (r) => badgeFor(r.state) },
+      { key: "state", label: "State", render: (r) => badgeFor(r.state) + (r.over_budget ? " <span class=\"muted\">no block, requests continue</span>" : "") },
     ],
     actions: writable() ? [
       { label: "Edit", run: (r) => costControlForm(r) },

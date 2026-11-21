@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
 from collections.abc import Iterator
 from typing import Any
 
 from .._ids import foundry_account_id
 from ..errors import ForbiddenError
-from ..models import CostControl
+from ..models import CostControl, ProjectBudget, applies_to_project, project_budget
 from ._base import _Operations
 
 
@@ -129,6 +130,91 @@ class CostControlOperations(_Operations):
     ) -> None:
         url = f"{self._base(account, project, resource_group)}/{self._seg(name)}"
         self._write("DELETE", url, headers={"If-Match": if_match} if if_match else None)
+
+    def exists(
+        self, account: str, name: str, *, project: str | None = None, resource_group: str | None = None
+    ) -> bool:
+        """``True`` if the cost control exists (a ``HEAD`` request: no body is returned)."""
+        from ..errors import NotFoundError
+
+        url = f"{self._base(account, project, resource_group)}/{self._seg(name)}"
+        try:
+            self._arm("HEAD", url, self._v.cost_controls, expected=(200,))
+        except NotFoundError:
+            return False
+        return True
+
+    def _remove(
+        self, kind: str, account: str, name: str, project: str | None, resource_group: str | None, if_match: str | None
+    ) -> CostControl:
+        current = self.get(account, name, project=project, resource_group=resource_group)
+        threshold = current.alert if kind == "notifications" else current.block
+        if threshold is None:
+            return current
+        entry = threshold._default_name("alert" if kind == "notifications" else "block")
+        # A null entry deletes the named alert or action; every other property is kept.
+        props: dict[str, Any] = {"notifications": {entry: None}} if kind == "notifications" else {
+            "providerProperties": {"actions": {entry: None}}}
+        return self.update(account, name, project=project, resource_group=resource_group, if_match=if_match, **props)
+
+    def remove_alert(
+        self, account: str, name: str, *, project: str | None = None, resource_group: str | None = None,
+        if_match: str | None = None,
+    ) -> CostControl:
+        """Delete the cost control's alert and keep everything else (PATCH with a ``null`` notification)."""
+        return self._remove("notifications", account, name, project, resource_group, if_match)
+
+    def remove_block(
+        self, account: str, name: str, *, project: str | None = None, resource_group: str | None = None,
+        if_match: str | None = None,
+    ) -> CostControl:
+        """Delete the cost control's Block action and keep everything else. It then tracks and alerts only."""
+        return self._remove("block", account, name, project, resource_group, if_match)
+
+    def applicable(self, account: str, project: str, *, resource_group: str | None = None) -> builtins.list[CostControl]:
+        """What a project's **Cost Control** tab lists: the project's own cost controls plus the Foundry resource's
+        that apply to it (read-only there)."""
+        return [cc for cc in self.list_all(account, resource_group=resource_group) if applies_to_project(cc, project)]
+
+    def project_budget(self, account: str, project: str, *, resource_group: str | None = None) -> ProjectBudget:
+        """The *Project budget* card: the lowest whole-project spending budget, and the counts. See
+        :func:`foundry_finops.models.project_budget` for the rules."""
+        return project_budget(self.applicable(account, project, resource_group=resource_group), project)
+
+    def delete_project_cost_controls(
+        self, account: str, project: str, *, resource_group: str | None = None
+    ) -> builtins.list[str]:
+        """Delete every cost control the project owns and return their names.
+
+        A project that has its own cost controls can't be deleted (HTTP 409 ``CostControlInUse``), so call this first.
+        The Foundry resource's cost controls are not touched.
+        """
+        names = [cc.name for cc in self.list(account, project=project, resource_group=resource_group) if cc.name]
+        for n in names:
+            self.delete(account, n, project=project, resource_group=resource_group)
+        return names
+
+    # -------------------------------------------------------------- usage data
+    def get_usage_connection(self, account: str, *, resource_group: str | None = None) -> str | None:
+        """Resource ID of the Application Insights connection that records usage for the account's cost controls
+        (the portal's **Usage data**), or ``None`` when none is set."""
+        rid = foundry_account_id(self._sub, self._rg_or_default(resource_group), account)
+        body = self._arm("GET", rid, self._v.cost_controls).body or {}
+        conn = ((body.get("properties") or {}).get("costControlConnections") or {})
+        return conn.get("appInsightsConnectionId")
+
+    def set_usage_connection(
+        self, account: str, connection_id: str | None, *, resource_group: str | None = None
+    ) -> None:
+        """Set, or with ``None`` clear, the Application Insights connection for the account's cost controls.
+
+        ``connection_id`` is the ID of a Foundry connection (``.../accounts/<account>/connections/<name>``). It is
+        shared by every cost control on the account, so changing it affects all of them. Alerts and blocks work
+        without it; it is only needed to see usage against each budget.
+        """
+        rid = foundry_account_id(self._sub, self._rg_or_default(resource_group), account)
+        value = {"appInsightsConnectionId": connection_id} if connection_id else None
+        self._write("PATCH", rid, body={"properties": {"costControlConnections": value}})
 
     def find_event_grid_connection_id(self, account: str, *, resource_group: str | None = None) -> str | None:
         """Return an ``eventGridConnectionId`` already used by an existing cost control.

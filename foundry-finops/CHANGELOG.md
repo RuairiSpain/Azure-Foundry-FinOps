@@ -4,6 +4,20 @@
 
 First release.
 
+### Added (documentation gaps G1 to G7)
+- `evaluate_cost_control` and `CostControlState`: the portal's states (Scheduled, On track, Near threshold, Limit
+  reached with an `over_budget` flag, Expired, Active). The reporting facade uses them, so "Usage unknown" is now
+  `Active` and "Over budget" is the `over_budget` flag on Limit reached.
+- `BudgetHeaders` (and `BudgetExceededError.budget`) for the block and budget-state headers; the alert event gains
+  `cost_basis`, `call_cost`, `tokens_consumed` and the token counts; `AlertDeduper` with a pluggable store.
+- Cost control rules: non-blank filter values, `tokenType` input or output, a project-owned control selects only its
+  own project, filters at most 32 KiB.
+- `cost_controls.exists()`, `remove_alert()`, `remove_block()`, `applicable()`, `project_budget()`,
+  `delete_project_cost_controls()`, and `get_usage_connection()` / `set_usage_connection()` for the account's
+  Application Insights (*Usage data*) connection; `FoundryAccount.app_insights_connection_id`.
+- `fo.policy` (Azure Policy compliance) and the `policy_violations` download file.
+- `foundry_cost_reader_definition()`: the documented least-privilege "Foundry Cost Reader" role.
+
 ### Fixes (documentation conformance review, `docs/DOCS_CONFORMANCE.md`)
 - A cost control now needs both `start_date` and `end_date` (the service requires a validity period; before, the SDK
   sent none and the service answered HTTP 400). The MCP tool requires them too.

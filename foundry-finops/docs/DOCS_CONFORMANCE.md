@@ -29,19 +29,23 @@ confirms it, needs a live tenant), **OK** (matches). Every Bug below was reprodu
 | U1 | The download command queries Cost Management at the **Foundry resource ID**. The OpenAPI scope lists only subscription, resource group, billing and management-group scopes. The docs say the portal reads cost at the subscription or resource group, and a role on only the Foundry resource or project "isn't enough". `roles.py` treats a role held on the Foundry resource as sufficient. | No source says the resource scope works for the Query API. If it fails, query the resource group with a `ResourceId` filter and require the role there. |
 | U2 | `ptu_headroom` requires `Microsoft.CognitiveServices/locations/usages/read`. | Not on the Learn pages. It matches the Cognitive Services usages API, but it is from general knowledge. |
 | U3 | The `FoundryModelEstimatedCost` preview metric used for near-real-time cost. | Not on any fetched Learn page. It came from the Azure Monitor metric definitions earlier. |
+| U4 | `fo.policy` reads with `POST .../policyStates/latest/queryResults` (api `2019-10-01`, from the Policy Insights spec). The Foundry docs list `Microsoft.PolicyInsights/*/read` for the policy cards, and the SDK's role check uses that string. | Whether the Reader role can call that `POST` is not in the docs. |
 
 ## Gaps
 
-| ID | Documented | SDK |
+| ID | Documented | Status |
 |---|---|---|
-| G1 | States: Scheduled, On track, Near threshold, Limit reached (tagged **Over budget** when it does not block), Expired, Active (usage unknown), Needs setup. | `_with_status` has On track, Near threshold, Limit reached, Over budget (as a separate state), Usage unknown. Scheduled, Expired and Needs setup are missing. |
-| G2 | Blocked response headers `x-ms-cost-control-type`, `x-ms-budget-state`, `x-ms-available-pre-call-budget`. Alert fields `costBasis`, `tokensConsumed`, token counts, `callCost`, `startDate`, `endDate`. | Not modelled. Token-budget values arrive as strings (coerced correctly today). |
-| G3 | Filter rules: a project-owned control can select only its own project; `tokenType` accepts `input` or `output`; values must be non-blank; the serialised definition is at most 32 KiB; an agent filter needs a project filter even on project-owned controls. | Only the agent/project rule and the 20-session limit are validated. |
-| G4 | Account property `costControlConnections.appInsightsConnectionId` ("Usage data"). | Not modelled; cannot read or set it. |
-| G5 | `HEAD` on a cost control (exists check); PATCH `null` entries delete an alert or block. | Not implemented. |
-| G6 | `Microsoft.PolicyInsights/*/read` (fleet policy cards). | No policy operations. |
-| G7 | Custom role "Foundry Cost Reader" with the listed actions. | No generator. |
-| G8 | The page does not publish the Application Insights schema behind "Closest to limit (estimated)". | Usage is rebuilt from billed cost or metrics and labelled an estimate. Direct reads stay unsupported. |
+| G1 | The cost control states. | Done, except *Needs setup*, which can't be derived from the definition. `evaluate_cost_control`, `CostControlState`. |
+| G2 | Block and budget-state headers; alert fields `costBasis`, `tokensConsumed`, token counts, `callCost`, dates; one notification per threshold. | Done: `BudgetHeaders`, the extended `CostControlAlertEvent`, `AlertDeduper`. |
+| G3 | Filter rules. | Done in `CostControl.validate`. |
+| G4 | The account's Application Insights connection ("Usage data"). | Done: `get_usage_connection`, `set_usage_connection`, `FoundryAccount.app_insights_connection_id`. |
+| G5 | `HEAD` exists check; `null` PATCH entries delete an alert or block. | Done: `exists`, `remove_alert`, `remove_block`. |
+| G6 | `Microsoft.PolicyInsights/*/read` (fleet policy cards). | Done: `fo.policy`, `policy_violations`. The queries are `POST` reads; whether Reader can run them is unverified (U4). |
+| G7 | Custom role "Foundry Cost Reader". | Done: `foundry_cost_reader_definition`. |
+| G8 | The Application Insights schema behind "Closest to limit (estimated)". | Still blocked: the docs don't publish it. Usage stays an estimate built from billed cost or metrics. |
+
+Also added from the plan: the project budget card (`project_budget`), the project's applicable cost controls and
+`delete_project_cost_controls` (the `CostControlInUse` guard).
 
 ## Verified OK
 

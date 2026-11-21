@@ -249,6 +249,12 @@ def _cost_controls(ctx: ExportContext) -> Any:
     return rows
 
 
+def _policy_violations(ctx: ExportContext) -> Any:
+    ctx.note("policy_violations", "Non-compliant resources under the Foundry resource, with the number of failing "
+                                  "policy states on each (Azure Policy Insights, latest states).")
+    return ctx.client.policy.violations_by_resource(ctx.account_id)
+
+
 def _budgets(ctx: ExportContext) -> Any:
     return [b.to_json() for b in ctx.client.cost.list_budgets()]
 
@@ -360,6 +366,8 @@ QUERIES: list[Query] = [
     Query("metric_definitions", "Metrics the Foundry resource exposes",
           lambda c: c.client.metrics.definitions(c.account_id)),
     # --- Quota, tags, alerts, gateway, prices
+    Query("policy_violations", "Policy violations on the Foundry resource and what it contains (Azure Policy)",
+          _policy_violations),
     Query("quota_usage", "Regional model quota (TPM) used and available",
           lambda c: [q.to_json() for q in c.client.quota.usages(c.location)]),
     Query("quota_models", "Models and SKUs available in the region", _quota_models),
@@ -400,7 +408,7 @@ _APIM = BROAD_READ | {"api management service reader role", "api management serv
 QUERY_ROLES: dict[str, frozenset[str] | None] = {
     "cost_daily_total": _COST, "cost_by_project": _COST, "cost_by_agent": _COST, "cost_by_deployment": _COST,
     "cost_by_team": _COST, "cost_by_model": _COST, "cost_by_meter": _COST, "cost_forecast": _COST,
-    "cost_dimensions": _COST, "cost_exports": _COST, "budgets": _COST, "budget_status": _COST,
+    "policy_violations": BROAD_READ, "cost_dimensions": _COST, "cost_exports": _COST, "budgets": _COST, "budget_status": _COST,
     "cost_by_pricing_model": _COST, "cost_by_charge_type": _COST, "cost_anomalies": _COST, "effective_prices": _COST,
     "estimated_cost_by_project": _MONITOR, "estimated_cost_by_deployment": _MONITOR, "ptu_headroom": BROAD_READ,
     "cost_controls": _FOUNDRY, "foundry_account": _FOUNDRY, "foundry_projects": _FOUNDRY,

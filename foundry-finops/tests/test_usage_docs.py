@@ -126,7 +126,8 @@ def _group_class(group: str) -> type:
     names = {"foundry": ops.FoundryOperations, "cost_controls": ops.CostControlOperations,
              "cost": ops.CostManagementOperations, "metrics": ops.MetricsOperations, "logs": ops.LogsOperations,
              "quota": ops.QuotaOperations, "tags": ops.TagOperations, "alerts": ops.AlertOperations,
-             "apim": ops.ApimOperations, "pricing": ops.PricingOperations, "authorization": ops.AuthorizationOperations}
+             "apim": ops.ApimOperations, "pricing": ops.PricingOperations, "authorization": ops.AuthorizationOperations,
+             "policy": ops.PolicyOperations}
     return names[group]
 
 

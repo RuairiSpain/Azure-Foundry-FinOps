@@ -50,6 +50,7 @@ QUERY_REQUIREMENTS: dict[str, Requirement] = {
     "estimated_cost_by_deployment": _need("Microsoft.Insights/metrics/read", scope="account"),
     "ptu_headroom": _need(f"{_COG}/accounts/deployments/read", f"{_COG}/accounts/read", "Microsoft.Insights/metrics/read",
                           f"{_COG}/locations/usages/read", scope="subscription"),
+    "policy_violations": _need("Microsoft.PolicyInsights/*/read", scope="account"),
     "cost_forecast": _need("Microsoft.CostManagement/forecast/read", scope="account"),
     "cost_dimensions": _need("Microsoft.CostManagement/dimensions/read", scope="account"),
     "cost_exports": _need("Microsoft.CostManagement/exports/read", scope="account"),
@@ -82,6 +83,38 @@ KQL_REQUIREMENT = Requirement(
     (("Microsoft.OperationalInsights/workspaces/query/read",), ("Microsoft.Insights/components/query/read",)),
     "anywhere",
 )
+
+
+#: The actions of the least-privilege "Foundry Cost Reader" role from the Foundry docs ("Permissions for cost data
+#: and cost controls"). It shows costs, forecasts, usage, cost controls and policy violations and changes nothing.
+FOUNDRY_COST_READER_ACTIONS = (
+    "Microsoft.Consumption/*/read",
+    "Microsoft.CostManagement/*/read",
+    "Microsoft.Insights/metrics/read",
+    "Microsoft.CognitiveServices/accounts/costControls/read",
+    "Microsoft.CognitiveServices/accounts/projects/costControls/read",
+    "Microsoft.PolicyInsights/*/read",
+    "Microsoft.Resources/subscriptions/read",
+)
+
+
+def foundry_cost_reader_definition(subscription_id: str) -> dict[str, object]:
+    """The custom role definition for ``az role definition create --role-definition @file.json``.
+
+    It doesn't let people open Foundry projects; assign **Foundry User** as well if they need to.
+    """
+    if not subscription_id:
+        raise ValueError("subscription_id is required")
+    return {
+        "Name": "Foundry Cost Reader",
+        "IsCustom": True,
+        "Description": "View Foundry costs, forecasts, usage, cost controls, and policy violations.",
+        "Actions": list(FOUNDRY_COST_READER_ACTIONS),
+        "NotActions": [],
+        "DataActions": [],
+        "NotDataActions": [],
+        "AssignableScopes": [f"/subscriptions/{subscription_id}"],
+    }
 
 
 def requirement_for(query_name: str) -> Requirement | None:

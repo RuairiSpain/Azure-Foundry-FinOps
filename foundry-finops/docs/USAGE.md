@@ -88,6 +88,7 @@ Everything starts from `FinOpsClient`. It has one attribute for each group of qu
 | `fo.alerts` | Metric alerts, log alerts, action groups |
 | `fo.apim` | API Management AI gateway: products, subscriptions, token-limit policies |
 | `fo.pricing` | Azure retail prices and token cost estimates |
+| `fo.policy` | Azure Policy compliance (policy violations on a scope) |
 | `fo.authorization` | Your role assignments |
 
 ```python
@@ -568,6 +569,49 @@ has **at most one alert and one Block action**. Filters on `agent` or `sessionId
 `Microsoft.CognitiveServices/CostControlsByIdentity` registered on the subscription; without it the service answers
 403 `FeatureNotRegistered` and the SDK adds the registration command to the error message.
 
+**Check, trim and manage cost controls**
+
+```python
+from foundry_finops import FinOpsClient
+
+with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+    acct = "contoso-foundry"
+
+    # Does it exist? (a HEAD request, no body)
+    fo.cost_controls.exists(acct, "fraud-risk-monthly", project="fraud-risk")
+
+    # Remove only the alert or only the Block action; everything else stays (a PATCH with a null entry)
+    fo.cost_controls.remove_alert(acct, "fraud-risk-monthly", project="fraud-risk")
+    fo.cost_controls.remove_block(acct, "fraud-risk-monthly", project="fraud-risk")
+
+    # What a project's Cost Control tab lists, and its Project budget card
+    for cc in fo.cost_controls.applicable(acct, "fraud-risk"):          # its own plus the resource's that apply
+        print(cc.name, cc.project or "resource", cc.amount)
+    card = fo.cost_controls.project_budget(acct, "fraud-risk")           # lowest whole-project spending budget
+    print(card.budget and card.budget.name, card.count, card.per_agent_or_session)
+
+    # A project that has cost controls can't be deleted (409 CostControlInUse): delete its own first
+    fo.cost_controls.delete_project_cost_controls(acct, "fraud-risk")
+
+    # "Usage data": the Application Insights connection that records usage for the account's cost controls
+    conn = fo.cost_controls.get_usage_connection(acct)
+    fo.cost_controls.set_usage_connection(acct, conn)                    # None clears it; shared by every control
+```
+
+**State of a cost control.** `evaluate_cost_control` applies the portal's definitions: Scheduled (before the start
+date), On track, Near threshold (the lowest alert threshold, or 80 % without an alert), Limit reached (the budget or
+the Block threshold; `over_budget` is true when there is no Block action, so requests continue), Expired (from the end
+date) and Active (usage can't be read). It needs a usage figure from you: Foundry has no usage API, and
+`LiveService` estimates one (below). The portal's *Needs setup* state isn't modelled.
+
+```python
+from datetime import datetime, timezone
+from foundry_finops import evaluate_cost_control
+
+status = evaluate_cost_control(amount=500, usage=410, alert_percents=[80], block_percents=[100])
+print(status.state, status.percent_used, status.over_budget)    # Near threshold 82.0 False
+```
+
 **Cost control with estimated usage (reporting facade)**
 
 Foundry has no usage API for cost controls, so `LiveService` estimates usage for the current reset window. For Cost
@@ -969,6 +1013,37 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
 
 To check which download queries those roles allow, see [section 8](#8-download-everything) (`--roles auto`).
 
+**Least-privilege role.** The Foundry docs give a custom role that shows costs, forecasts, usage, cost controls and
+policy violations and changes nothing. It doesn't let people open Foundry projects; assign Foundry User as well for that:
+
+```python
+import json
+
+from foundry_finops.roles import foundry_cost_reader_definition
+
+with open("foundry-cost-reader.json", "w") as f:
+    json.dump(foundry_cost_reader_definition("<subscription-id>"), f, indent=2)
+# az role definition create --role-definition @foundry-cost-reader.json
+```
+
+### 5.12b Policy violations (Azure Policy)
+
+The fleet's policy cards read Azure Policy compliance (`Microsoft.PolicyInsights/*/read`):
+
+```python
+from foundry_finops import FinOpsClient
+
+with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
+    account_id = fo.foundry.account_id("contoso-foundry")
+    for row in fo.policy.violations_by_resource(account_id):       # most violations first
+        print(row["resource_id"], row["violations"], row["policies"])
+    deny = list(fo.policy.states(account_id, filter="PolicyDefinitionAction eq 'deny'"))   # raw latest states
+```
+
+```bash
+foundry-finops download --only policy_violations
+```
+
 ### 5.13 Reports computed from API data: anomalies, allocation, PTU
 
 These reports are calculated from data the Azure APIs return. Each states its method, and none of them estimates or fills
@@ -1131,6 +1206,23 @@ except BudgetExceededError as e:
 
 For streaming calls, the block arrives as an error event inside an HTTP 200 response: pass its text to
 `is_budget_exceeded(headers, body)`.
+
+**Reading the cost control headers.** Responses that a cost control covers carry `x-ms-budget-state` and
+`x-ms-applicable-policy-id` (some responses name it `x-ms-applied-cost-control-id`); a block adds
+`x-ms-budget-cause`, `x-ms-budget-window-reset` and `x-ms-cost-control-type` (`Cost` or `Tokens`). For a Spending
+budget `x-ms-available-pre-call-budget` should fall as usage counts. If the headers are missing, or it doesn't fall, the
+model might not have a price in that region yet: use a Tokens budget, quota or AI gateway token limits for it.
+`BudgetHeaders.from_headers` reads them from any headers mapping, case-insensitively. Don't rely on the client's
+automatic retries for blocks: a blocked chat completions request also carries `Retry-After: 30`, which doesn't mean the
+budget allows usage again by then.
+
+```python
+from foundry_finops import BudgetHeaders
+
+headers = {"x-ms-budget-cause": "budget_exceeded", "x-ms-cost-control-type": "Tokens"}   # response.headers
+info = BudgetHeaders.from_headers(headers)
+print(info.blocked, info.covered, info.cost_control_type, info.policy_id, info.window_reset)
+```
 
 **Reading cost-control alerts.** Alerts are delivered through Event Grid as CloudEvents. Foundry sends one per request
 while usage is over a threshold, so de-duplicate with `dedupe_key_for`. The event doesn't carry the cost control's name,

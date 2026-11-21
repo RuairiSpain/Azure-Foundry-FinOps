@@ -31,13 +31,14 @@ from .models import (
     Threshold,
     ThresholdType,
     TimeGrain,
+    evaluate_cost_control,
 )
 
 logger = logging.getLogger("foundry_finops.service")
 
 GROUPINGS = ("project", "agent", "deployment", "model", "team")
 #: Cost-control states that need a person's attention.
-ATTENTION_STATES = ("Near threshold", "Limit reached", "Over budget")
+ATTENTION_STATES = ("Near threshold", "Limit reached")
 
 
 # ================================================================= settings
@@ -142,27 +143,30 @@ def budget_from_payload(p: dict[str, Any]) -> Budget:
 
 
 def _with_status(row: dict[str, Any]) -> dict[str, Any]:
-    usage, amount = row.get("usage"), row.get("amount") or 0
-    if usage is None or not amount:
-        row["percent_used"], row["state"] = None, "Usage unknown"
-        return row
-    pct = usage / amount * 100
+    """Add ``state``, ``percent_used`` and ``over_budget`` to a cost control row, using the portal's definitions.
+
+    A control whose usage can't be read is ``Active`` (the portal shows it as "Usage unknown"); that doesn't mean its
+    requests are blocked.
+    """
+    amount = row.get("amount") or 0
 
     def as_pct(t: dict[str, Any] | None) -> float | None:
         """Thresholds may be a percentage of the amount or an absolute amount."""
-        if not t or t.get("threshold") in (None, ""):
+        if not t or t.get("threshold") in (None, "") or not amount:
             return None
         value = float(t["threshold"])
         return value / amount * 100 if str(t.get("threshold_type")) == "Absolute" else value
 
-    # With several thresholds the lowest alert and the lowest block are the ones usage reaches first.
-    alert_pcts = [p for p in (as_pct(t) for t in row.get("alerts") or [row.get("alert")]) if p]
-    block_pcts = [p for p in (as_pct(t) for t in row.get("blocks") or [row.get("block")]) if p]
-    alert = min(alert_pcts, default=80)
-    block = min(block_pcts, default=None)
-    row["percent_used"] = round(pct, 1)
-    row["state"] = ("Limit reached" if block and pct >= block else "Over budget" if pct >= 100
-                    else "Near threshold" if pct >= alert else "On track")
+    alerts = [p for p in (as_pct(t) for t in row.get("alerts") or [row.get("alert")]) if p]
+    blocks = [p for p in (as_pct(t) for t in row.get("blocks") or [row.get("block")]) if p]
+    usage = row.get("usage")
+    status = evaluate_cost_control(
+        amount=amount, usage=usage, alert_percents=alerts, block_percents=blocks,
+        start=row.get("start_date") or None, end=row.get("end_date") or None,
+    )
+    row["state"] = str(status.state)
+    row["over_budget"] = status.over_budget
+    row["percent_used"] = status.percent_used if usage is not None and amount else None
     return row
 
 

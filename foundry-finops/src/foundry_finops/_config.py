@@ -71,6 +71,8 @@ class ApiVersions:
     #: Microsoft.Resources tags.
     tags: str = "2021-04-01"
     resources: str = "2021-04-01"
+    #: Microsoft.PolicyInsights policy states.
+    policy_insights: str = "2019-10-01"
     #: Microsoft.ApiManagement.
     api_management: str = "2024-05-01"
     #: Microsoft.EventGrid topics (cost-control alert destinations).

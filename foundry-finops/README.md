@@ -64,7 +64,8 @@ fo.apim.set_token_limit("contoso-ai-gateway", LlmTokenLimit(tokens_per_minute=60
 | Attribute | REST surface | Highlights |
 |---|---|---|
 | `fo.foundry` | `Microsoft.CognitiveServices` accounts, projects, deployments, connections | `set_capacity()` (TPM), Event Grid topics |
-| `fo.cost_controls` | `accounts[/projects]/costControls` (preview) | CRUD, `PATCH`, `If-None-Match`, `list_all()` across projects |
+| `fo.cost_controls` | `accounts[/projects]/costControls` (preview) | CRUD, `PATCH`, `If-None-Match`, `list_all()`, `exists()`, `remove_alert()`, `project_budget()`, usage connection |
+| `fo.policy` | `Microsoft.PolicyInsights` policy states | `violations_by_resource()`, `states()` |
 | `fo.cost` | `Microsoft.CostManagement` query, forecast, budgets, exports, tag inheritance | `CostQuery` builder, paging, `cost_by()` |
 | `fo.metrics` | `Microsoft.Insights/metrics` | `FoundryMetrics` names, split by deployment/model |
 | `fo.logs` | Log Analytics query API (workspace or App Insights resource) | returns `Table` |
@@ -160,7 +161,7 @@ Reader** on the subscription, plus **Log Analytics Reader** for the KQL files.
 | Queries (file names) | Role | Scope |
 |---|---|---|
 | `cost_*` (including `cost_by_pricing_model`, `cost_by_charge_type`, `cost_anomalies`), `cost_forecast`, `cost_dimensions`, `cost_exports`, `effective_prices`, `budgets`, `budget_status` | **Cost Management Reader** | The Foundry resource for cost queries; the resource group or subscription for budgets |
-| `foundry_account`, `foundry_projects`, `foundry_deployments`, `foundry_connections`, `cost_controls`, `apim_gateway`, `tags` (account and project) | **Reader** | The resource group with the Foundry resource and the API Management instance |
+| `foundry_account`, `foundry_projects`, `foundry_deployments`, `foundry_connections`, `cost_controls`, `policy_violations`, `apim_gateway`, `tags` (account and project) | **Reader** | The resource group with the Foundry resource and the API Management instance |
 | `quota_usage`, `quota_models`, `ptu_headroom`, `foundry_event_grid_topics`, tag inventory in `tags` | **Reader** | The subscription (these calls are subscription-wide) |
 | `token_usage_by_*`, `estimated_cost_by_*`, `metric_definitions`, `alerts` | **Monitoring Reader** | The Foundry resource; the resource group for alerts |
 | `kql_*` | **Log Analytics Reader** (workspace) or **Monitoring Reader** (Application Insights resource) | The resource that holds the telemetry |

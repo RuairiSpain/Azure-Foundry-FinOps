@@ -351,7 +351,7 @@ class UsageEstimateTests(unittest.TestCase):
         [row] = svc.list_cost_controls()
         self.assertIsNone(row["usage"])
         self.assertIn("session", row["usage_note"].lower())
-        self.assertEqual(row["state"], "Usage unknown")
+        self.assertEqual(row["state"], "Active")  # usage can't be read; the portal words it "Usage unknown"
 
     def test_a_failing_lookup_does_not_break_the_listing(self):
         svc, _ = self._service([{"id": self.ACCT + "/costControls/cap", "name": "cap", "properties": {

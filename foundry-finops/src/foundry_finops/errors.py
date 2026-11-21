@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 BUDGET_CAUSE_HEADER = "x-ms-budget-cause"
@@ -73,8 +74,64 @@ class ThrottledError(HttpResponseError):
             return None
 
 
+@dataclass(frozen=True)
+class BudgetHeaders:
+    """The ``x-ms-*`` headers Foundry adds to responses that a cost control covers.
+
+    A blocked request carries ``x-ms-budget-cause: budget_exceeded`` (only cost control blocks have it) with the ID
+    of the cost control, when its budget resets and its budget type. A successful request covered by a cost control
+    carries ``x-ms-budget-state`` and ``x-ms-applicable-policy-id``; for a spending budget
+    ``x-ms-available-pre-call-budget`` falls as usage is counted. If those are missing, or the budget doesn't fall, the
+    model might not have a price in that region yet.
+    """
+
+    cause: str | None = None
+    policy_id: str | None = None
+    window_reset: str | None = None
+    cost_control_type: str | None = None  #: ``Cost`` for a spending budget, ``Tokens`` for a token budget
+    state: str | None = None
+    available_pre_call_budget: float | None = None
+
+    @property
+    def blocked(self) -> bool:
+        return (self.cause or "").lower() == "budget_exceeded"
+
+    @property
+    def covered(self) -> bool:
+        """``True`` if a cost control covered the request (blocked or not)."""
+        return any((self.cause, self.policy_id, self.state, self.cost_control_type))
+
+    @classmethod
+    def from_headers(cls, headers: Mapping[str, str] | None) -> BudgetHeaders:
+        """Read the headers from a ``requests``/``httpx``/OpenAI response or a plain dict (case-insensitive)."""
+        h = headers or {}
+        policy = next((v for v in (_get_header(h, n) for n in BUDGET_POLICY_HEADERS) if v), None)
+        raw = _get_header(h, "x-ms-available-pre-call-budget")
+        try:
+            remaining = float(raw) if raw not in (None, "") else None
+        except ValueError:
+            remaining = None
+        return cls(
+            cause=_get_header(h, BUDGET_CAUSE_HEADER),
+            policy_id=policy,
+            window_reset=_get_header(h, BUDGET_RESET_HEADER),
+            cost_control_type=_get_header(h, "x-ms-cost-control-type"),
+            state=_get_header(h, "x-ms-budget-state"),
+            available_pre_call_budget=remaining,
+        )
+
+
 class BudgetExceededError(ThrottledError):
     """429 caused by a Foundry cost control ``Block usage`` action. Retrying won't help until reset."""
+
+    @property
+    def budget(self) -> BudgetHeaders:
+        return BudgetHeaders.from_headers(self.headers)
+
+    @property
+    def cost_control_type(self) -> str | None:
+        """``Cost`` (spending budget) or ``Tokens`` (token budget)."""
+        return self.budget.cost_control_type
 
     @property
     def reset_at(self) -> str | None:
