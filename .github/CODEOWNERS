@@ -1,0 +1,19 @@
+# Code owners are requested for review automatically on pull requests that touch these paths.
+# The last matching pattern wins. Format: https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+*                                          @RuairiSpain
+
+# Anything that sends Azure credentials or decides who may call what
+/foundry-finops/src/foundry_finops/_transport.py    @RuairiSpain
+/foundry-finops/src/foundry_finops/_auth.py         @RuairiSpain
+/foundry-finops/src/foundry_finops/operations/_base.py  @RuairiSpain
+/foundry-finops-cowork/mcp_server/                  @RuairiSpain
+
+# CI, release and repository rules
+/.github/                                  @RuairiSpain
+/foundry-finops/pyproject.toml             @RuairiSpain
+
+# Legal and privacy
+/LICENSE                                   @RuairiSpain
+/PRIVACY.md                                @RuairiSpain
