@@ -115,20 +115,20 @@ class FoundryOperations(_Operations):
     def set_capacity(
         self, account: str, deployment: str, capacity: int, *, resource_group: str | None = None, wait: bool = True
     ) -> Deployment:
-        """Change a deployment's capacity (TPM allocation) while keeping model, SKU and policy."""
-        rid = f"{self.account_id(account, resource_group)}/deployments/{self._seg(deployment)}"
+        """Change a deployment's capacity (TPM or PTU allocation) and nothing else.
+
+        Uses a PATCH of ``sku.capacity``. A full PUT would have to send every property back, and anything the
+        client doesn't know about (service tier ``Priority``, spillover deployment, paused state, routing) would be
+        reset to its default: a silent change to price and behaviour.
+        """
         if capacity < 1:
             raise ValueError("capacity must be at least 1")
+        rid = f"{self.account_id(account, resource_group)}/deployments/{self._seg(deployment)}"
         current = self._arm("GET", rid, self._v.cognitive_services).body
         if not isinstance(current, dict):
             raise HttpResponseError(f"Deployment {deployment!r} returned an unexpected response", status_code=200)
-        keep = ("model", "raiPolicyName", "versionUpgradeOption", "parentDeploymentName")
-        body = {
-            "sku": {**(current.get("sku") or {}), "capacity": capacity},
-            "properties": {k: v for k, v in (current.get("properties") or {}).items() if k in keep},
-            "tags": current.get("tags") or {},
-        }
-        resp = self._arm("PUT", rid, self._v.cognitive_services, body=body)
+        sku = {**(current.get("sku") or {}), "capacity": capacity}
+        resp = self._arm("PATCH", rid, self._v.cognitive_services, body={"sku": sku})
         if wait:
             self._t.poll(resp, scope=self._cloud.arm_scope)
             return self._wait_provisioned(account, deployment, resource_group)

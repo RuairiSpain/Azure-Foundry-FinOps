@@ -455,7 +455,8 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
     acct = "contoso-foundry"
     conn_id = fo.cost_controls.find_event_grid_connection_id(acct)
 
-    # $500 a month for each agent in one project: alert at 50 % and 80 %, block at 100 %
+    # $500 a month for each agent in one project: alert at 80 %, block at 100 %.
+    # The service allows one alert and one Block action per cost control.
     fo.cost_controls.create_or_update(
         acct,
         CostControl(
@@ -466,8 +467,7 @@ with FinOpsClient("<subscription-id>", resource_group="rg-ai") as fo:
             start_date="2026-12-01",
             filters={"project": ["fraud-risk"]},                # project, deployment, agent, sessionId, tokenType
             sharing=BudgetSharing.PER_AGENT,                    # SHARED, PER_AGENT, PER_SESSION, PER_PROJECT
-            alert=Threshold(50, event_grid_connection_id=conn_id),
-            extra_alerts=[Threshold(80, event_grid_connection_id=conn_id)],
+            alert=Threshold(80, event_grid_connection_id=conn_id),
             block=Threshold(100),
         ),
         project="fraud-risk",                                   # create it inside the project

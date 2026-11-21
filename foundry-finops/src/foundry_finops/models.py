@@ -165,8 +165,14 @@ class TimeGrain(_StrEnum):
     DAILY = "Daily"
     WEEKLY = "Weekly"
     MONTHLY = "Monthly"
-    QUARTERLY = "Quarterly"  # Cost Management budgets only
-    ANNUALLY = "Annually"  # Cost Management budgets only
+    #: Cost Management budgets only (not accepted by Foundry cost controls):
+    QUARTERLY = "Quarterly"
+    ANNUALLY = "Annually"
+    BILLING_MONTH = "BillingMonth"
+    BILLING_QUARTER = "BillingQuarter"
+    BILLING_ANNUAL = "BillingAnnual"
+    LAST_7_DAYS = "Last7Days"
+    LAST_30_DAYS = "Last30Days"
 
 
 class ThresholdType(_StrEnum):
@@ -238,20 +244,16 @@ class CostControl(ArmResource):
     sharing: BudgetSharing = BudgetSharing.SHARED
     alert: Threshold | None = None
     block: Threshold | None = None
-    #: Further ``Send alert`` / ``Block usage`` thresholds (e.g. alerts at 50 % and 80 %). Kept so that
-    #: reading a cost control and writing it back never silently drops thresholds.
-    extra_alerts: list[Threshold] = field(default_factory=list)
-    extra_blocks: list[Threshold] = field(default_factory=list)
     #: Owner scope – populated from the ID: ``account`` or ``project``.
     project: str | None = None
 
     @property
     def alerts(self) -> list[Threshold]:
-        return ([self.alert] if self.alert else []) + list(self.extra_alerts)
+        return [self.alert] if self.alert else []
 
     @property
     def blocks(self) -> list[Threshold]:
-        return ([self.block] if self.block else []) + list(self.extra_blocks)
+        return [self.block] if self.block else []
 
     # ------------------------------------------------------------- validation
     def validate(self) -> None:
@@ -261,8 +263,10 @@ class CostControl(ArmResource):
             raise ValueError("Cost control name must be 1-63 letters, numbers, hyphens or underscores")
         if self.amount <= 0:
             raise ValueError("amount must be positive")
-        if self.time_grain in (TimeGrain.QUARTERLY, TimeGrain.ANNUALLY):
-            raise ValueError("Cost controls reset Daily, Weekly or Monthly; Quarterly/Annually are for budgets")
+        if self.time_grain not in (TimeGrain.DAILY, TimeGrain.WEEKLY, TimeGrain.MONTHLY):
+            raise ValueError("Cost controls reset Daily, Weekly or Monthly; the other periods are for budgets")
+        if len(self.alerts) > 1 or len(self.blocks) > 1:
+            raise ValueError("A Foundry cost control has at most one alert and one Block action (the service rejects more)")
         if self.category == BudgetCategory.TOKENS and int(self.amount) != self.amount:
             raise ValueError("Token limits must be whole numbers")
         if "agent" in self.filters and len(self.filters.get("project", [])) != 1:
@@ -274,6 +278,9 @@ class CostControl(ArmResource):
         if self.project and self.sharing == BudgetSharing.PER_PROJECT:
             raise ValueError("Only a Foundry resource's cost controls can use a per-project budget")
         for t in (*self.alerts, *self.blocks):
+            if (self.category == BudgetCategory.TOKENS and t.threshold_type == ThresholdType.ABSOLUTE
+                    and int(t.threshold) != t.threshold):
+                raise ValueError("Absolute thresholds on a Tokens budget must be whole numbers")
             if t.threshold_type == ThresholdType.PERCENTAGE and not 0 < t.threshold <= 100:
                 raise ValueError("Percentage thresholds must be between 0 and 100")
             if t.threshold_type == ThresholdType.ABSOLUTE and not 0 < t.threshold <= self.amount:
@@ -383,8 +390,6 @@ class CostControl(ArmResource):
             sharing=_enum(BudgetSharing, grouping, BudgetSharing.SHARED),
             alert=alerts[0] if alerts else None,
             block=blocks[0] if blocks else None,
-            extra_alerts=alerts[1:],
-            extra_blocks=blocks[1:],
             project=project,
         )
 
@@ -474,7 +479,7 @@ class Budget(ArmResource):
     """An Azure Cost Management budget. Alerts on billed cost; it can't block requests."""
 
     amount: float = 0
-    time_grain: TimeGrain = TimeGrain.MONTHLY
+    time_grain: TimeGrain | str = TimeGrain.MONTHLY
     start_date: str | None = None
     end_date: str | None = None
     #: Cost Management filter expression (``{"and": [{"tags": {...}}, {"dimensions": {...}}]}``).
@@ -557,7 +562,7 @@ class Budget(ArmResource):
             type=d.get("type"),
             raw=dict(d),
             amount=float(p.get("amount", 0) or 0),
-            time_grain=TimeGrain(grain) if grain in TimeGrain._value2member_map_ else TimeGrain.MONTHLY,
+            time_grain=TimeGrain(grain) if grain in TimeGrain._value2member_map_ else grain,  # never rewrite a period we don't know
             start_date=tp.get("startDate"),
             end_date=tp.get("endDate"),
             filter=p.get("filter"),

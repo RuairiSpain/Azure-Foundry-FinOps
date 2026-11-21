@@ -5,6 +5,7 @@
 First release.
 
 ### Features
+- Review of the Azure cost and usage APIs against the SDK (`docs/API_COVERAGE.md`), with a prioritised list of additions.
 - `foundry-finops cost --scope` queries any scope (subscription, resource group, resource, management group, billing
   scope), and `--by` accepts any tag name or Cost Management dimension as well as the five Foundry groups.
 - Usage guide (`docs/USAGE.md`): install, import, and every query type with the SDK call and CLI command side by
@@ -31,6 +32,11 @@ First release.
   query to `FinOps/<today>/<query>.json`, plus `_manifest.json` listing what succeeded, was skipped or failed.
 
 ### Hardening and fixes from the code review
+- Foundry cost controls allow **one** alert and **one** Block action (the preview API answers HTTP 400 otherwise);
+  this is validated, and absolute Token thresholds must be whole numbers.
+- `foundry.set_capacity` sends a PATCH of `sku.capacity`; the earlier full PUT reset properties it didn't know about
+  (service tier, spillover deployment, paused state).
+- Cost Management budgets keep periods such as `Last7Days` and `BillingMonth` instead of rewriting them to `Monthly`.
 **Security / integration**
 - Credentials can no longer be sent to a non-ARM host: absolute URLs and `..` in caller-supplied scopes are
   refused; user-supplied names are percent-encoded as single path segments; OData filter values are escaped.
@@ -61,8 +67,6 @@ First release.
 - Cost controls report an estimated `usage` (with `usage_note`) per reset window: Cost budgets from billed cost
   filtered by the control's project/deployment/agent tags, Tokens budgets from Azure Monitor metrics. Controls that
   can't be reproduced (per-session, project/agent token budgets) stay "Usage unknown" with a reason.
-- `CostControl` supports several alert thresholds (`extra_alerts`, `extra_blocks`); reading and re-saving a control
-  no longer drops any. The MCP tool takes `alert_thresholds_pct`.
 - Alerts reuse the Event Grid connection of an existing cost control when none is given.
 - APIM writes use the ETag they read (`If-Match: <etag>`) instead of `*`, so a concurrent edit yields a conflict
   instead of being overwritten; creates send no `If-Match`.

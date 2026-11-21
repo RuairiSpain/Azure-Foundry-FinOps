@@ -96,9 +96,6 @@ def cost_control_from_payload(p: dict[str, Any]) -> CostControl:
 
     filters = {k: [v for v in (vals if isinstance(vals, list) else str(vals).split(",")) if str(v).strip()]
                for k, vals in (p.get("filters") or {}).items()}
-    # Either the single `alert`/`block` form (UI, MCP tool) or `alerts`/`blocks` lists for several thresholds.
-    alerts = [t for t in (thr(x) for x in (p.get("alerts") or [])) if t] or [t for t in [thr(p.get("alert"))] if t]
-    blocks = [t for t in (thr(x) for x in (p.get("blocks") or [])) if t] or [t for t in [thr(p.get("block"))] if t]
     return CostControl(
         name=p["name"],
         category=BudgetCategory(p.get("category") or "Cost"),
@@ -108,10 +105,8 @@ def cost_control_from_payload(p: dict[str, Any]) -> CostControl:
         end_date=p.get("end_date") or None,
         filters={k: [s.strip() for s in v] for k, v in filters.items() if v},
         sharing=BudgetSharing(p.get("sharing") or "shared"),
-        alert=alerts[0] if alerts else None,
-        block=blocks[0] if blocks else None,
-        extra_alerts=alerts[1:],
-        extra_blocks=blocks[1:],
+        alert=thr(p.get("alert")),
+        block=thr(p.get("block")),
         project=p.get("project") or None,
     )
 
@@ -128,8 +123,6 @@ def cost_control_to_payload(cc: CostControl, usage: float | None = None, usage_n
     d["block"] = _threshold_payload(cc.block) if cc.block else None
     d["alerts"] = [_threshold_payload(t) for t in cc.alerts]
     d["blocks"] = [_threshold_payload(t) for t in cc.blocks]
-    d.pop("extra_alerts", None)
-    d.pop("extra_blocks", None)
     d["usage"] = usage
     if usage_note:
         d["usage_note"] = usage_note

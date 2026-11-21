@@ -212,35 +212,78 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class MultiThresholdTests(unittest.TestCase):
-    def test_round_trip_keeps_every_alert_and_block(self):
+class CostControlSpecTests(unittest.TestCase):
+    """Limits stated by the Foundry cost-control API (2026-11-15-preview)."""
+
+    CONN = "/subscriptions/s/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/a/connections/eg"
+
+    def test_one_alert_and_one_block_round_trip(self):
         from foundry_finops import Threshold
 
-        conn = "/subscriptions/s/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/a/connections/eg"
-        cc = CostControl(name="cap", amount=1000, alert=Threshold(50, event_grid_connection_id=conn),
-                         extra_alerts=[Threshold(80, event_grid_connection_id=conn)],
+        cc = CostControl(name="cap", amount=1000, alert=Threshold(80, event_grid_connection_id=self.CONN),
                          block=Threshold(100))
         body = cc.to_dict()
-        self.assertEqual(len(body["properties"]["notifications"]), 2)
         back = CostControl.from_dict({"name": "cap", "properties": body["properties"]})
-        self.assertEqual([t.threshold for t in back.alerts], [50, 80])
-        self.assertEqual(back.to_dict()["properties"]["notifications"], body["properties"]["notifications"])
+        self.assertEqual((back.alert.threshold, back.block.threshold), (80, 100))
+        self.assertEqual(back.to_dict()["properties"], body["properties"])
 
-    def test_validation_covers_extra_thresholds(self):
+    def test_more_than_one_alert_is_refused_before_the_service_answers_400(self):
         from foundry_finops import Threshold
 
-        conn = "x"
-        with self.assertRaisesRegex(ValueError, "at or below"):
-            CostControl(name="c", amount=10, alert=Threshold(50, event_grid_connection_id=conn),
-                        extra_alerts=[Threshold(95, event_grid_connection_id=conn)], block=Threshold(90)).to_dict()
-        with self.assertRaisesRegex(ValueError, "unique"):
-            CostControl(name="c", amount=10, alert=Threshold(50, event_grid_connection_id=conn),
-                        extra_alerts=[Threshold(50, event_grid_connection_id=conn)]).to_dict()
+        class TwoAlerts(CostControl):
+            @property
+            def alerts(self):  # what a model holding two alerts would report
+                return [Threshold(50, event_grid_connection_id="x"), Threshold(80, event_grid_connection_id="x")]
 
-    def test_status_uses_the_lowest_threshold(self):
-        row = {"amount": 100, "usage": 55, "alerts": [{"threshold": 50}, {"threshold": 80}],
-               "blocks": [{"threshold": 100}]}
-        self.assertEqual(_with_status(row)["state"], "Near threshold")
+        with self.assertRaisesRegex(ValueError, "at most one alert"):
+            TwoAlerts(name="c", amount=10).to_dict()
+
+    def test_payload_builds_a_single_alert_and_block(self):
+        from foundry_finops.service import cost_control_from_payload
+
+        cc = cost_control_from_payload({"name": "c", "amount": 10, "alert": {"threshold": 50},
+                                        "block": {"threshold": 90}})
+        self.assertEqual((len(cc.alerts), len(cc.blocks)), (1, 1))
+
+    def test_alert_must_not_exceed_block(self):
+        from foundry_finops import Threshold
+
+        with self.assertRaisesRegex(ValueError, "at or below"):
+            CostControl(name="c", amount=10, alert=Threshold(95, event_grid_connection_id=self.CONN),
+                        block=Threshold(90)).to_dict()
+
+    def test_token_budget_absolute_thresholds_are_whole_numbers(self):
+        from foundry_finops import BudgetCategory, Threshold, ThresholdType
+
+        with self.assertRaisesRegex(ValueError, "whole numbers"):
+            CostControl(name="t", amount=1000, category=BudgetCategory.TOKENS,
+                        block=Threshold(10.5, ThresholdType.ABSOLUTE)).to_dict()
+
+    def test_budget_only_periods_are_refused_for_cost_controls_and_kept_for_budgets(self):
+        for grain in (TimeGrain.QUARTERLY, TimeGrain.BILLING_MONTH, TimeGrain.LAST_30_DAYS):
+            with self.subTest(grain=grain), self.assertRaises(ValueError):
+                CostControl(name="x", amount=5, time_grain=grain).to_dict()
+        for raw in ("Last7Days", "BillingQuarter", "SomethingNew"):
+            b = Budget.from_dict({"name": "b", "properties": {"amount": 5, "timeGrain": raw}})
+            self.assertEqual(str(b.time_grain), raw)  # re-saving must not change the budget's period
+            b.notifications = [BudgetNotification(80, ["a@b.com"])]
+            self.assertEqual(b.to_dict()["properties"]["timeGrain"], raw)
+
+
+class SetCapacityTests(unittest.TestCase):
+    def test_capacity_change_is_a_patch_that_cannot_reset_other_properties(self):
+        s = FakeSession()
+        client = make_client(s)
+        dep = {"name": "gpt", "sku": {"name": "GlobalStandard", "capacity": 10},
+               "properties": {"model": {"name": "gpt-5.4"}, "serviceTier": "Priority", "deploymentState": "Paused",
+                              "spilloverDeploymentName": "backup", "provisioningState": "Succeeded"}}
+        s.add("GET", "/deployments/gpt", 200, dep)
+        s.add("PATCH", "/deployments/gpt", 200, {})
+        out = client.foundry.set_capacity("acct", "gpt", 50)
+        patch = next(c for c in s.calls if c["method"] == "PATCH")
+        self.assertEqual(patch["json"], {"sku": {"name": "GlobalStandard", "capacity": 50}})
+        self.assertFalse([c for c in s.calls if c["method"] == "PUT"])
+        self.assertEqual(out.name, "gpt")
 
 
 class UsageEstimateTests(unittest.TestCase):

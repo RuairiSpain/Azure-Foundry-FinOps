@@ -21,6 +21,8 @@ pip install "foundry-finops[tracing]"      # OpenTelemetry / Application Insight
 * **[Usage guide](https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/USAGE.md)**:
   install, import, and every query type with the SDK call and the command line side by side (cost, budgets, exports,
   Foundry resources, cost controls, token metrics, KQL, quota, tags, alerts, API Management, prices, tracing, errors).
+* **[API coverage review](https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/API_COVERAGE.md)**:
+  which Azure cost and usage APIs (including preview ones) the SDK covers, what is missing, and what to add next.
 * **[Download setup guide](https://github.com/RuairiSpain/Azure-Foundry-FinOps/blob/main/foundry-finops/docs/SETUP.md)**:
   `foundry-finops download`, roles, scheduling in GitHub Actions and troubleshooting.
 
