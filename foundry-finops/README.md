@@ -142,6 +142,31 @@ Reading cost needs **Cost Management Reader**; metrics need **Monitoring Reader*
 read and Foundry Owner / Account Owner (resource) or Project Manager (project) to write; budgets need **Cost
 Management Contributor**; APIM changes need **API Management Service Contributor**.
 
+### Roles needed by `foundry-finops download`
+
+`download` only reads, so read roles are enough. The shortest set is **Reader + Cost Management Reader + Monitoring
+Reader** on the subscription, plus **Log Analytics Reader** for the KQL files.
+
+| Queries (file names) | Role | Scope |
+|---|---|---|
+| `cost_*`, `cost_forecast`, `cost_dimensions`, `cost_exports`, `budgets` | **Cost Management Reader** | The Foundry resource for cost queries; the resource group or subscription for budgets |
+| `foundry_account`, `foundry_projects`, `foundry_deployments`, `foundry_connections`, `cost_controls`, `apim_gateway`, `tags` (account and project) | **Reader** | The resource group with the Foundry resource and the API Management instance |
+| `quota_usage`, `quota_models`, `foundry_event_grid_topics`, tag inventory in `tags` | **Reader** | The subscription (these calls are subscription-wide) |
+| `token_usage_by_*`, `metric_definitions`, `alerts` | **Monitoring Reader** | The Foundry resource; the resource group for alerts |
+| `kql_*` | **Log Analytics Reader** (workspace) or **Monitoring Reader** (Application Insights resource) | The resource that holds the telemetry |
+| `retail_price_sheet` | None (public API) | n/a |
+
+* A query without its role fails on its own (HTTP 403 in `_manifest.json`) and the others still download. A sign-in
+  failure stops the whole run.
+* No data-plane roles (Cognitive Services User, Azure AI User) are needed: everything is management-plane reads.
+* Cost data also depends on your billing arrangement. Enterprise Agreements need the enrollment's "view charges"
+  settings enabled, Microsoft Customer Agreements need the billing profile to allow it, and CSP subscriptions need the
+  partner to enable cost visibility. If cost queries return 403 or no rows with the roles above, check this first.
+* Reading Foundry cost controls is a preview API. If `cost_controls` returns 403 with Reader, add a Foundry role such
+  as Foundry User on the resource.
+* The MCP connector runs with the signed-in user's roles, so the same table applies; its Entra app also needs the
+  delegated permissions listed in `foundry-finops-cowork/docs/SETUP.md`.
+
 ## Development
 
 ```bash
