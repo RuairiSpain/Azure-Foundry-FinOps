@@ -69,3 +69,28 @@ describe("DemoAuth", () => {
     await expect(auth.signIn()).rejects.toThrow();
   });
 });
+
+describe("usage split calls", () => {
+  it("builds the queries and bodies", async () => {
+    const auth = new DemoAuth([], store());
+    await auth.signIn("o");
+    const f = vi.fn().mockImplementation(() => Promise.resolve(json({})));
+    const api = new ApiClient({ auth, fetchImpl: f as unknown as typeof fetch });
+    await api.usageSplit(7);
+    await api.usageSplit(30, "hold", 3);
+    await api.saveUsagePool({ name: "p", match_type: "agent", values: ["a"], unattributed: "hold" });
+    await api.saveUsagePool({ name: "p", match_type: "agent", values: ["a"], unattributed: "hold" }, 4);
+    await api.setDepartmentMap("Risk & Fraud", 2);
+    await api.deleteDepartmentMap("Risk & Fraud");
+    const calls = f.mock.calls.map(([url, init]) => `${init.method} ${url}`);
+    expect(calls).toEqual([
+      "GET /api/cost-centres/usage-split?days=7",
+      "GET /api/cost-centres/usage-split?days=30&unattributed=hold&pool=3",
+      "POST /api/usage-pools",
+      "PUT /api/usage-pools/4",
+      "PUT /api/cost-centres/department-map",
+      "DELETE /api/cost-centres/department-map?department=Risk+%26+Fraud",
+    ]);
+    expect(JSON.parse(f.mock.calls[4]![1].body)).toEqual({ department: "Risk & Fraud", cost_centre_id: 2 });
+  });
+});

@@ -291,3 +291,52 @@ export interface AccessPage {
   portal_access: boolean;
   message: string | null;
 }
+
+/** One cost centre's part of a usage split. `code` is the unattributed code for usage nobody can name. */
+export interface SplitRow {
+  code: string;
+  name: string;
+  allocated: number;
+  share_percent: number;
+}
+export interface SplitResult {
+  total: number;
+  mode: "proportional" | "hold";
+  coverage_percent: number;
+  unattributed_percent: number;
+  rows: SplitRow[];
+  unmapped_departments: { department: string; usage: number }[];
+}
+export interface PoolSplit extends SplitResult {
+  id: number;
+  name: string;
+  match_type: "agent" | "deployment";
+  values: string[];
+  /** False when no usage record carried one of the pool's members, so all of its cost is unattributed. */
+  matched_usage: boolean;
+}
+/** With no pools, the whole-resource fields are set; with pools, `pools`, `totals` and the pooled costs are. */
+export interface UsageSplit extends Partial<SplitResult> {
+  days: number;
+  currency: string;
+  measure: "cost" | "tokens";
+  unattributed_code: string;
+  note: string;
+  pools: PoolSplit[];
+  totals?: { code: string; name: string; allocated: number }[];
+  pooled_cost?: number;
+  unpooled_cost?: number;
+}
+export type UnattributedMode = "proportional" | "hold";
+export interface UsagePool {
+  id: number;
+  name: string;
+  match_type: "agent" | "deployment";
+  unattributed: UnattributedMode;
+  values: string[];
+}
+export interface DepartmentMapping {
+  department: string;
+  cost_centre_id: number;
+  cost_centre_code: string;
+}

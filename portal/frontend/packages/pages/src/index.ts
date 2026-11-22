@@ -9,6 +9,7 @@ import { FleetPage } from "./FleetPage";
 import { NotificationsPage } from "./NotificationsPage";
 import { OperationsPage } from "./OperationsPage";
 import { ProjectMonitorPage } from "./ProjectMonitorPage";
+import { UsageSplitPage } from "./UsageSplitPage";
 
 export * from "./AccessPage";
 export * from "./AdminPage";
@@ -21,6 +22,7 @@ export * from "./FleetPage";
 export * from "./NotificationsPage";
 export * from "./OperationsPage";
 export * from "./ProjectMonitorPage";
+export * from "./UsageSplitPage";
 export * from "./common";
 export * from "./context";
 
@@ -46,6 +48,7 @@ export const defaultPages: PageDefinition[] = [
   { id: "cost", path: "/cost", title: "Cost", section: "Manage", component: CostPage },
   { id: "projects", path: "/projects/:project?", title: "Project monitor", section: "Build", component: ProjectMonitorPage },
   { id: "cost-centres", path: "/cost-centres", title: "Cost centres", section: "Allocate", component: CostCentresPage },
+  { id: "usage-split", path: "/usage-split", title: "Usage split", section: "Allocate", component: UsageSplitPage, visible: (me) => me.role === "admin" },
   { id: "notifications", path: "/notifications", title: "Notifications", section: "Allocate", component: NotificationsPage },
   { id: "budgets", path: "/budgets", title: "Budgets & tags", section: "Allocate", component: BudgetsTagsPage, visible: (me) => me.account_level },
   { id: "admin", path: "/admin", title: "Admin", section: "Administer", component: AdminPage, visible: (me) => me.role === "admin" },
