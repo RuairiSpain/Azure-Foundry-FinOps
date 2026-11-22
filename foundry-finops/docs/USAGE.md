@@ -1194,6 +1194,33 @@ with FinOpsClient(DefaultAzureCredential(), "<subscription-id>", resource_group=
         print(row["key"], row["share_percent"], row["allocated"])
 ```
 
+**Splitting a shared cost by who used it.** Record the caller on each model call (optional; a call without it is
+`unknown`), then split by each cost centre's share of usage. `identity_from_claims` reads `oid` and `tid` from claims of a
+token your service has **already validated**; never build them from request input. `allocate_by_usage` takes the usage
+records and a function from a caller's object ID to a cost centre (for example built from each person's department):
+
+```python
+from foundry_finops.analysis import allocate_by_usage
+from foundry_finops.tracing import UsageTracker, finops_context, identity_from_claims
+
+tracker = UsageTracker()
+
+def answer(claims, response):                       # claims: from a validated access token
+    with finops_context(agent_id="case-review:1", **identity_from_claims(claims)):
+        return tracker.record(response)             # caller_type: user, agent or unknown
+
+department_cost_centre = {"oid-1": "CC-FIN", "oid-2": "CC-HR"}   # built from a dated department snapshot
+calls = [{"caller_oid": "oid-1", "cost": 6.0}, {"caller_oid": "oid-2", "cost": 2.0}, {"caller_oid": "", "cost": 2.0}]
+result = allocate_by_usage(1250.00, calls, department_cost_centre.get, unattributed="proportional")
+for row in result["rows"]:
+    print(row["key"], row["share_percent"], row["allocated"])
+print(result["coverage_percent"])                   # share of usage that had a known cost centre
+```
+
+`unattributed="proportional"` spreads usage with no identity over the cost centres in proportion to their usage;
+`"hold"` shows it on a `(unattributed)` row instead. The result is an allocation, not billed cost. The design, the gateway
+policy prototype and what is still untested are in `DESIGN_USAGE_ATTRIBUTION.md` and `examples/apim/`.
+
 **PTU headroom.** For each provisioned deployment: capacity in PTUs, service tier and state, utilisation from the
 `AzureOpenAIProvisionedManagedUtilizationV2` metric (mean of the interval averages, and the maximum), whether the maximum
 reached 100 percent (Microsoft documents that calls are throttled with HTTP 429 from there), and the regional quota row

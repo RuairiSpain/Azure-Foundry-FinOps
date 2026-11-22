@@ -2,6 +2,7 @@
 
 * :func:`detect_anomalies` flags days whose billed cost jumps above the group's own recent history.
 * :func:`allocate_cost` splits a cost across groups in proportion to weights **you** supply (an allocation rule).
+* :func:`allocate_by_usage` splits a shared cost between cost centres by each one's share of recorded usage.
 * :func:`ptu_headroom` joins provisioned deployments, regional quota and the utilisation metric.
 
 Each function states its method and parameters in its output, so a number can always be traced back to the
@@ -11,7 +12,7 @@ inputs that produced it.
 from __future__ import annotations
 
 import statistics
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -24,7 +25,10 @@ from .operations.monitor import (  # noqa: F401  (project_matches re-exported fo
     project_matches,
 )
 
-__all__ = ["Anomaly", "allocate_cost", "anomalies_from_table", "detect_anomalies", "ptu_headroom"]
+#: Name of the row that holds usage with no caller identity, or a caller with no cost centre.
+UNATTRIBUTED = "(unattributed)"
+
+__all__ = ["Anomaly", "allocate_by_usage", "allocate_cost", "anomalies_from_table", "detect_anomalies", "ptu_headroom"]
 
 
 # ------------------------------------------------------------------- anomalies
@@ -153,6 +157,55 @@ def allocate_cost(
     rows = [{"key": k, "weight": weights[k], "share_percent": round(weights[k] / wsum * 100, 4),
              "allocated": base[k] / unit} for k in weights]
     return sorted(rows, key=lambda r: -r["allocated"])
+
+
+def allocate_by_usage(
+    total: float,
+    calls: Iterable[Mapping[str, Any]],
+    resolve: Callable[[str], str | None],
+    *,
+    measure: str = "cost",
+    unattributed: str = "proportional",
+    decimals: int = 2,
+) -> dict[str, Any]:
+    """Split a shared cost between cost centres by each one's share of recorded usage.
+
+    ``calls`` are usage records (or per-caller totals) with a ``caller_oid`` and a number under ``measure`` (``"cost"``
+    by default, or ``"tokens"``). ``resolve`` maps a caller object ID to a cost centre, or ``None`` when the caller has
+    no department or the department has no cost centre. Calls with no ``caller_oid``, and callers that don't resolve,
+    are **unattributed**; attribution is optional, so that is a normal result, not an error.
+
+    ``unattributed="proportional"`` spreads the shared cost over the cost centres in proportion to attributed usage, so
+    every part belongs to a cost centre. ``"hold"`` gives the unattributed usage its own ``(unattributed)`` row at its
+    own share, so nobody is charged for usage nobody can name. Either way the parts add up to ``total`` exactly (see
+    :func:`allocate_cost`). With no attributed usage at all, the whole amount is ``(unattributed)``.
+
+    Returns ``{"rows", "coverage_percent", "unattributed_percent", "mode"}``. The result is an allocation, not billed
+    cost.
+    """
+    if unattributed not in ("proportional", "hold"):
+        raise ValueError("unattributed must be 'proportional' or 'hold'")
+    weights: dict[str, float] = {}
+    known = unknown = 0.0
+    for call in calls:
+        value = float(call.get(measure) or 0)
+        if value < 0:
+            raise ValueError(f"{measure} can't be negative")
+        oid = str(call.get("caller_oid") or "")
+        centre = resolve(oid) if oid else None
+        if centre:
+            weights[centre] = weights.get(centre, 0.0) + value
+            known += value
+        else:
+            unknown += value
+    if known + unknown <= 0:
+        raise ValueError("There is no usage to allocate on")
+    coverage = round(known / (known + unknown) * 100, 2)
+    if known <= 0 or (unattributed == "hold" and unknown > 0):
+        weights[UNATTRIBUTED] = unknown
+    rows = allocate_cost(total, {k: v for k, v in weights.items() if v > 0}, decimals=decimals)
+    return {"rows": rows, "coverage_percent": coverage, "unattributed_percent": round(100 - coverage, 2),
+            "mode": unattributed}
 
 
 # ------------------------------------------------------------------- PTU report

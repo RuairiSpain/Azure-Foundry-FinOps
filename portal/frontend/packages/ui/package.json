@@ -1,0 +1,12 @@
+{
+  "name": "@foundry-finops/ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Presentational components and the theme of the Foundry FinOps portal. No API calls.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": { ".": "./src/index.ts", "./theme.css": "./src/theme.css" },
+  "peerDependencies": { "react": "^18.3.1", "react-dom": "^18.3.1" },
+  "scripts": { "typecheck": "tsc -p tsconfig.json" }
+}

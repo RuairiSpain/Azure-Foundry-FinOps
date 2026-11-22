@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.db
+*.db-journal
+.venv/
+__pycache__/
+backend/src/foundry_finops_portal/static/
+*.tsbuildinfo
+coverage/
+playwright-report/

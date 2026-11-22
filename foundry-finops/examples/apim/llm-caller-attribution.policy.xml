@@ -1,0 +1,95 @@
+<!--
+  PROTOTYPE, not deployed or tested against a live API Management instance. See README.md in this folder.
+
+  Records who called a model deployment, when the caller's token says so, and falls back to "unknown" when it does not.
+
+  Inbound only. Put it on the LLM API (or one operation) in API Management. Named values to create first:
+    tenant-id      your Entra tenant ID
+    api-audience   the audience your callers' tokens are issued for (the application ID URI of the gateway API)
+
+  Result per call:
+    caller_oid   object ID of the signed-in person (delegated token) or of the calling agent or service (app token)
+    caller_tid   tenant ID
+    caller_type  user (delegated token, has an scp claim) | agent (app-only token) | unknown (no bearer token)
+    agent_id     azp or appid claim (the calling application's client ID), or the optional x-finops-agent-id header
+
+  A request with no bearer token is not rejected here: it is recorded as unknown. A bearer token that fails validation
+  is rejected with 401, so identity can't be forged by sending a bad token.
+
+  The metric carries only coarse dimensions (caller_type, agent_id, caller_tid). The object ID is NOT a metric dimension:
+  a metric dimension is limited to 100 unique values, and data past the limit is silently discarded. The object ID goes
+  in the per-call trace record instead.
+-->
+<policies>
+  <inbound>
+    <base />
+    <choose>
+      <when condition='@(context.Request.Headers.GetValueOrDefault("Authorization", "").StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))'>
+        <validate-jwt header-name="Authorization" failed-validation-httpcode="401"
+                      failed-validation-error-message="Unauthorized" output-token-variable-name="finops-jwt">
+          <openid-config url="https://login.microsoftonline.com/{{tenant-id}}/v2.0/.well-known/openid-configuration" />
+          <audiences>
+            <audience>{{api-audience}}</audience>
+          </audiences>
+          <issuers>
+            <issuer>https://login.microsoftonline.com/{{tenant-id}}/v2.0</issuer>
+          </issuers>
+        </validate-jwt>
+      </when>
+    </choose>
+
+    <set-variable name="finops-caller-oid" value='@{
+        var jwt = context.Variables.GetValueOrDefault&lt;Jwt&gt;("finops-jwt");
+        return jwt == null ? "" : (jwt.Claims.GetValueOrDefault("oid", new string[0]).FirstOrDefault() ?? "");
+    }' />
+    <set-variable name="finops-caller-tid" value='@{
+        var jwt = context.Variables.GetValueOrDefault&lt;Jwt&gt;("finops-jwt");
+        return jwt == null ? "" : (jwt.Claims.GetValueOrDefault("tid", new string[0]).FirstOrDefault() ?? "");
+    }' />
+    <set-variable name="finops-caller-type" value='@{
+        var jwt = context.Variables.GetValueOrDefault&lt;Jwt&gt;("finops-jwt");
+        if (jwt == null) { return "unknown"; }
+        return jwt.Claims.ContainsKey("scp") ? "user" : "agent";
+    }' />
+    <set-variable name="finops-agent-id" value='@{
+        var jwt = context.Variables.GetValueOrDefault&lt;Jwt&gt;("finops-jwt");
+        var fromToken = jwt == null ? "" : (jwt.Claims.GetValueOrDefault("azp", jwt.Claims.GetValueOrDefault("appid", new string[0])).FirstOrDefault() ?? "");
+        return fromToken != "" ? fromToken : context.Request.Headers.GetValueOrDefault("x-finops-agent-id", "unknown");
+    }' />
+
+    <!-- Coarse metric: stays inside the dimension limits. Add or remove dimensions here (at most five). -->
+    <llm-emit-token-metric namespace="finops">
+      <dimension name="caller_type" value='@((string)context.Variables["finops-caller-type"])' />
+      <dimension name="agent_id" value='@((string)context.Variables["finops-agent-id"])' />
+      <dimension name="caller_tid" value='@((string)context.Variables["finops-caller-tid"])' />
+    </llm-emit-token-metric>
+
+    <!-- One record per call, joined to the gateway's token log by request ID (see README.md). -->
+    <trace source="finops-attribution" severity="information">
+      <message>@{
+          return new JObject(
+              new JProperty("request_id", context.RequestId.ToString()),
+              new JProperty("api", context.Api.Name),
+              new JProperty("caller_oid", (string)context.Variables["finops-caller-oid"]),
+              new JProperty("caller_tid", (string)context.Variables["finops-caller-tid"]),
+              new JProperty("caller_type", (string)context.Variables["finops-caller-type"]),
+              new JProperty("agent_id", (string)context.Variables["finops-agent-id"])
+          ).ToString(Newtonsoft.Json.Formatting.None);
+      }</message>
+    </trace>
+
+    <!-- Calls the model with the gateway's own managed identity. This replaces the caller's Authorization header after the
+         caller's token has been validated and recorded above. Needs the role "Cognitive Services OpenAI User" (or the
+         Foundry equivalent) for the gateway's identity on the model resource. Remove it if the backend uses an API key. -->
+    <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
