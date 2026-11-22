@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import { AdminPage, CostControlForm, FleetPage, PortalProvider, defaultPages } from "./index";
+import { AdminPage, CostControlForm, FleetPage, PortalProvider, UsageSplitPage, defaultPages } from "./index";
 
 const me = (over: Partial<Me> = {}): Me => ({
   oid: "o1", upn: "a@x", name: "A", role: "admin", grants: [], account_level: true, visible_projects: null, mode: "demo",
@@ -162,5 +162,121 @@ describe("defaultPages", () => {
     const paths = defaultPages.map((p) => p.path);
     expect(new Set(paths).size).toBe(paths.length);
     expect(within(document.body).queryAllByText("x")).toEqual([]);
+  });
+});
+
+describe("UsageSplitPage", () => {
+  const rows = [
+    { code: "CC-RISK", name: "Risk and compliance", allocated: 75, share_percent: 75 },
+    { code: "(unattributed)", name: "Usage with no cost centre", allocated: 25, share_percent: 25 },
+  ];
+  const whole = {
+    days: 30, currency: "USD", measure: "cost" as const, unattributed_code: "(unattributed)", note: "An allocation, not billed cost.",
+    pools: [], total: 100, mode: "hold" as const, coverage_percent: 75, unattributed_percent: 25, rows,
+    unmapped_departments: [{ department: "Finance", usage: 40 }],
+  };
+  const pooled = {
+    days: 30, currency: "USD", measure: "tokens" as const, unattributed_code: "(unattributed)", note: "Pool members must match.",
+    pools: [
+      { id: 1, name: "Support agents", match_type: "agent" as const, values: ["care-triage"], total: 60, mode: "proportional" as const,
+        coverage_percent: 0, unattributed_percent: 100, rows: [{ code: "(unattributed)", name: "x", allocated: 60, share_percent: 100 }],
+        unmapped_departments: [], matched_usage: false },
+    ],
+    totals: [{ code: "(unattributed)", name: "x", allocated: 60 }], pooled_cost: 60, unpooled_cost: 40,
+  };
+  const centres = [{ id: 7, code: "CC-FIN", name: "Finance", owner_oid: "", description: "", monthly_budget: null, rules: [] }];
+  type Mocks = Record<string, ReturnType<typeof vi.fn>>;
+  const api = (over: Mocks = {}): Mocks => ({
+    usageSplit: vi.fn().mockResolvedValue(whole), usagePools: vi.fn().mockResolvedValue([]),
+    departmentMap: vi.fn().mockResolvedValue([{ department: "Risk", cost_centre_id: 1, cost_centre_code: "CC-RISK" }]),
+    costCentres: vi.fn().mockResolvedValue(centres), ...over,
+  });
+
+  it("shows the whole-resource split, how much usage was attributed and which departments have no cost centre", async () => {
+    wrap(api(), <UsageSplitPage />);
+    expect(await screen.findByText("$75.00")).toBeInTheDocument();
+    expect(screen.getByText("Unattributed")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Usage with a known cost centre" })).toHaveAttribute("aria-valuenow", "75");
+    expect(screen.getByText(/Finance \(\$40.00\)/)).toBeInTheDocument();      // a department with no cost centre, and its usage
+    expect(screen.getAllByText("25.0%").length).toBeGreaterThan(0);      // shares are rounded for reading
+  });
+
+  it("shows pools, the cost outside them, and a pool that matched no usage", async () => {
+    wrap(api({ usageSplit: vi.fn().mockResolvedValue(pooled) }), <UsageSplitPage />);
+    expect(await screen.findByText(/Support agents · \$60.00/)).toBeInTheDocument();
+    expect(screen.getByText(/No usage record names any of this pool's agents/)).toBeInTheDocument();
+    expect(screen.getByText(/Outside every pool: \$40.00/)).toBeInTheDocument();
+  });
+
+  it("says what is wrong when the usage isn't connected, instead of showing numbers", async () => {
+    const f = vi.fn().mockRejectedValueOnce(new Error("Per-caller usage isn't configured. Set PORTAL_LOGS_TARGET")).mockResolvedValue(whole);
+    wrap(api({ usageSplit: f }), <UsageSplitPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("PORTAL_LOGS_TARGET");
+    expect(screen.getByText("Departments")).toBeInTheDocument();       // the rest of the page still works
+    await userEvent.click(screen.getByText("Try again"));
+    expect(await screen.findByText("$75.00")).toBeInTheDocument();
+  });
+
+  it("asks again when the unattributed setting or the range changes", async () => {
+    const a = api();
+    wrap(a, <UsageSplitPage />);
+    await screen.findByText("$75.00");
+    await userEvent.selectOptions(screen.getByLabelText("Usage with no cost centre"), "hold");
+    await waitFor(() => expect(a.usageSplit).toHaveBeenLastCalledWith(30, "hold"));
+    await userEvent.selectOptions(screen.getByLabelText("Date range"), "7");
+    await waitFor(() => expect(a.usageSplit).toHaveBeenLastCalledWith(7, "hold"));
+  });
+
+  it("maps a department to a cost centre and can remove a mapping", async () => {
+    const a = api({ setDepartmentMap: vi.fn().mockResolvedValue({}), deleteDepartmentMap: vi.fn().mockResolvedValue({ deleted: true }) });
+    wrap(a, <UsageSplitPage />);
+    await screen.findByText("$75.00");
+    const button = screen.getByText("Map department");
+    expect(button).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("Department"), " Finance ");
+    await userEvent.selectOptions(screen.getByLabelText("Cost centre for the department"), "7");
+    await userEvent.click(button);
+    await waitFor(() => expect(a.setDepartmentMap).toHaveBeenCalledWith("Finance", 7));
+    await userEvent.click(screen.getByText("Remove"));
+    await waitFor(() => expect(a.deleteDepartmentMap).toHaveBeenCalledWith("Risk"));
+  });
+
+  it("checks a pool before saving it and saves its members as a list", async () => {
+    const a = api({ saveUsagePool: vi.fn().mockResolvedValue({}) });
+    wrap(a, <UsageSplitPage />);
+    await screen.findByText("$75.00");
+    await userEvent.click(screen.getByText("New pool"));
+    await userEvent.click(screen.getByText("Save"));
+    expect(screen.getByRole("alert")).toHaveTextContent("Give the pool a name");
+    await userEvent.type(screen.getByLabelText("Name"), "Support");
+    await userEvent.click(screen.getByText("Save"));
+    expect(screen.getByRole("alert")).toHaveTextContent("at least one agent");
+    await userEvent.type(screen.getByLabelText("Members"), "care-triage, kb-answers{enter}refund-assistant");
+    await userEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(a.saveUsagePool).toHaveBeenCalledWith(
+      { name: "Support", match_type: "agent", values: ["care-triage", "kb-answers", "refund-assistant"], unattributed: "proportional" }, undefined));
+  });
+
+  it("shows the service's reason when a pool is refused", async () => {
+    const a = api({ saveUsagePool: vi.fn().mockRejectedValue(new Error("'x' is already in pool 'Other'; a value can be in one pool only")) });
+    wrap(a, <UsageSplitPage />);
+    await screen.findByText("$75.00");
+    await userEvent.click(screen.getByText("New pool"));
+    await userEvent.type(screen.getByLabelText("Name"), "P");
+    await userEvent.type(screen.getByLabelText("Members"), "x");
+    await userEvent.click(screen.getByText("Save"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("already in pool");
+  });
+
+  it("offers no changes in read-only mode, and the menu entry is for administrators", async () => {
+    wrap(api(), <UsageSplitPage />, me({ read_only: true }));
+    await screen.findByText("$75.00");
+    expect(screen.queryByText("New pool")).not.toBeInTheDocument();
+    expect(screen.queryByText("Map department")).not.toBeInTheDocument();
+    expect(screen.queryByText("Remove")).not.toBeInTheDocument();
+    const page = defaultPages.find((p) => p.id === "usage-split")!;
+    expect(page.visible!(me({ role: "admin" }))).toBe(true);
+    expect(page.visible!(me({ role: "viewer" }))).toBe(false);
+    expect(page.visible!(me({ role: "owner" }))).toBe(false);
   });
 });

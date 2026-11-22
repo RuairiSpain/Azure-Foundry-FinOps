@@ -42,6 +42,20 @@ Deploy again with `createEventSubscription=true`. Event Grid checks the endpoint
 the code from step 3 must already be running. Point your Foundry cost controls' notification at the Event Grid topic
 named in the `eventGridTopicName` output.
 
+## Optional: split cost by who used it
+
+The usage split (`GET /api/cost-centres/usage-split`) reads per-caller usage from Log Analytics. Set these App Service
+application settings by hand; the Bicep template does not set them yet.
+
+| Setting | Value |
+|---|---|
+| `PORTAL_LOGS_TARGET` | The Log Analytics workspace ID (or workspace resource ID) that holds the gateway's records. |
+| `PORTAL_USAGE_SOURCE` | `gateway` (default; the API Management policy in `foundry-finops/examples/apim`, **experimental**: weighted by tokens) or `client` (`llm.usage` records from the SDK; weighted by estimated cost). |
+
+The portal's identity needs the Log Analytics Reader role on that workspace, and `User.Read.All` (already needed for the
+directory check) so it can read each caller's department. Without `PORTAL_LOGS_TARGET` the endpoint answers 501 and says
+so. The `gateway` source needs one workspace that holds both the Application Insights traces and the gateway's LLM log.
+
 ## Parameters you will change
 
 | Parameter | Use |

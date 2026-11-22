@@ -112,6 +112,24 @@ def finops_context(**attributes: str) -> Iterator[dict[str, str]]:
         _ATTRS.reset(token)
 
 
+#: Values of ``caller_type``: a signed-in person, an agent acting on its own, or a call that carries no identity.
+CALLER_TYPES = ("user", "agent", "unknown")
+
+
+def identity_from_claims(claims: Mapping[str, Any]) -> dict[str, str]:
+    """``caller_oid`` and ``caller_tid`` from the claims of a token you have already validated.
+
+    Pass the result to :func:`finops_context`. Never build these from request input: a caller could omit or forge them.
+    Claims that are missing are left out, so the call is recorded as ``unknown`` instead of with an empty identity.
+    """
+    out: dict[str, str] = {}
+    for claim, key in (("oid", "caller_oid"), ("tid", "caller_tid")):
+        value = claims.get(claim)
+        if value:
+            out[key] = str(value)
+    return out
+
+
 @dataclass
 class UsageRecord:
     model: str
@@ -126,6 +144,21 @@ class UsageRecord:
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+    @property
+    def caller_type(self) -> str:
+        """``user`` when a caller object ID was recorded, ``agent`` when only an agent is known, else ``unknown``.
+
+        Attribution is optional: a call made without identity is ``unknown``, never an error.
+        """
+        explicit = self.attributes.get("caller_type")
+        if explicit in CALLER_TYPES:
+            return explicit
+        if self.attributes.get("caller_oid"):
+            return "user"
+        if self.attributes.get("agent_id") or self.attributes.get("agent"):
+            return "agent"
+        return "unknown"
 
 
 def extract_usage(response: Any) -> tuple[str, int, int, int, int]:
@@ -214,5 +247,6 @@ class UsageTracker:
         payload.pop("attributes")
         payload.update({PREFIX + k: v for k, v in rec.attributes.items()})
         payload["total_tokens"] = rec.total_tokens
+        payload[PREFIX + "caller_type"] = rec.caller_type  # in the log record only: a metric dimension would add cardinality
         # Lands in App Insights `traces` with customDimensions – see queries.TOKENS_BY_TEAM
         logger.info("llm.usage", extra={"custom_dimensions": payload, **payload})

@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import timedelta
 from typing import Any, Protocol
 
-from foundry_finops import CostQuery, FinOpsClient
+from foundry_finops import CostQuery, FinOpsClient, queries
 from foundry_finops.demo import data as demo_data
 from foundry_finops.service import DemoService, LiveService, Settings
 
@@ -39,11 +39,34 @@ class Backend(Protocol):
     def list_quota(self) -> list[dict[str, Any]]: ...
     def list_projects(self) -> list[dict[str, Any]]: ...
     def cost_by_project_agent(self, days: int) -> list[dict[str, Any]]: ...
+    def usage_by_caller(self, days: int) -> list[dict[str, Any]]: ...
     def policy_violations(self) -> list[dict[str, Any]]: ...
+
+
+#: Illustrative: who made the calls, as a share of all demo cost. The last two are not in the demo directory (a stranger)
+#: and carry no identity at all, so the demo shows both kinds of unattributed usage.
+DEMO_CALLERS: tuple[tuple[str, str, float], ...] = (
+    ("22222222-2222-2222-2222-222222222222", "user", 0.30),    # Bob, Risk
+    ("33333333-3333-3333-3333-333333333333", "user", 0.25),    # Carol, Support
+    ("55555555-5555-5555-5555-555555555555", "user", 0.10),    # Erin, Finance (no cost centre mapped)
+    ("11111111-1111-1111-1111-111111111111", "agent", 0.05),   # Alice's platform agent identity
+    ("99999999-9999-9999-9999-999999999999", "user", 0.10),    # not in the directory
+    ("", "unknown", 0.20),                                      # no identity recorded
+)
 
 
 class DemoBackend(DemoService):
     """Illustrative data. Writes change the in-memory demo store."""
+
+    def usage_by_caller(self, days: int) -> list[dict[str, Any]]:
+        """Each agent's cost shared out between the demo callers, with the agent and its model deployment on every row."""
+        out = []
+        for row in self.cost_by_project_agent(days):
+            deployment = demo_data.AGENT_MODEL.get(row["agent"], "")
+            for oid, kind, share in DEMO_CALLERS:
+                out.append({"caller_oid": oid, "caller_type": kind, "agent": row["agent"], "deployment": deployment,
+                            "cost": round(row["cost"] * share, 4)})
+        return out
 
     def list_projects(self) -> list[dict[str, Any]]:
         return [{"name": n, "display_name": n, "team": m["team"]} for n, m in demo_data.PROJECTS.items()]
@@ -88,6 +111,34 @@ class LiveBackend(LiveService):
                         "cost": round(float(rec.get("Cost") or rec.get("PreTaxCost") or 0), 4)})
         return out
 
+    def usage_by_caller(self, days: int) -> list[dict[str, Any]]:
+        """Usage per caller over the last ``days`` days, read from Log Analytics (``PORTAL_LOGS_TARGET``).
+
+        One record per caller, agent and deployment: ``caller_oid`` (empty when no identity was recorded), ``caller_type``,
+        ``agent``, ``deployment``, ``cost`` (estimated; ``None`` for the gateway source, which has tokens only),
+        ``tokens`` and ``calls``. Nothing is invented: when the
+        source isn't set up the method says what is missing.
+        """
+        target = self.settings.logs_target
+        if not target:
+            raise NotImplementedError(
+                "Per-caller usage isn't configured. Set PORTAL_LOGS_TARGET to the Log Analytics workspace that holds "
+                "the gateway's records (see foundry-finops/examples/apim and docs/DESIGN_USAGE_ATTRIBUTION.md).")
+        try:
+            query = queries.usage_by_caller(self.settings.usage_source, target)
+        except ValueError as exc:
+            raise NotImplementedError(str(exc)) from exc
+        table = self.kql(query, timespan=f"P{int(days)}D")
+        names = [c["name"] for c in table["columns"]]
+        out = []
+        for row in table["rows"]:
+            rec = dict(zip(names, row, strict=False))
+            out.append({"caller_oid": str(rec.get("oid") or ""), "caller_type": str(rec.get("kind") or "") or "unknown",
+                        "agent": str(rec.get("agent") or ""), "deployment": str(rec.get("deployment") or ""),
+                        "cost": None if rec.get("cost") is None else float(rec["cost"]),
+                        "tokens": int(rec.get("tokens") or 0), "calls": int(rec.get("calls") or 0)})
+        return out
+
     def policy_violations(self) -> list[dict[str, Any]]:
         try:
             return self.fo.policy.violations_by_resource(self._account_id)
@@ -108,6 +159,7 @@ class BackendProvider:
         s = self.settings
         return Settings(subscription_id=s.subscription_id, resource_group=s.resource_group,
                         foundry_account=s.foundry_account, apim_service=s.apim_service, location=s.location,
+                        logs_target=s.logs_target, usage_source=s.usage_source,
                         team_tag=s.team_tag, demo=s.demo, read_only=s.read_only)
 
     def for_user(self, principal: Principal) -> Any:

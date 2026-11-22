@@ -92,6 +92,18 @@ export class ApiClient {
     this.request<T.Rule>("POST", `/api/cost-centres/${id}/rules`, rule);
   deleteRule = (ruleId: number) => this.request<{ deleted: boolean }>("DELETE", `/api/cost-centres/rules/${ruleId}`);
 
+  usageSplit = (days = 30, unattributed?: T.UnattributedMode, pool?: number) =>
+    this.get<T.UsageSplit>(`/api/cost-centres/usage-split${qs({ days, unattributed, pool })}`);
+  usagePools = () => this.get<T.UsagePool[]>("/api/usage-pools");
+  saveUsagePool = (pool: Omit<T.UsagePool, "id">, id?: number) =>
+    this.request<T.UsagePool>(id ? "PUT" : "POST", id ? `/api/usage-pools/${id}` : "/api/usage-pools", pool);
+  deleteUsagePool = (id: number) => this.request<{ deleted: boolean }>("DELETE", `/api/usage-pools/${id}`);
+  departmentMap = () => this.get<T.DepartmentMapping[]>("/api/cost-centres/department-map");
+  setDepartmentMap = (department: string, costCentreId: number) =>
+    this.request<{ department: string; cost_centre_id: number }>("PUT", "/api/cost-centres/department-map", { department, cost_centre_id: costCentreId });
+  deleteDepartmentMap = (department: string) =>
+    this.request<{ deleted: boolean }>("DELETE", `/api/cost-centres/department-map${qs({ department })}`);
+
   notificationRules = () => this.get<T.NotificationRule[]>("/api/notification-rules");
   saveNotificationRule = (rule: T.NotificationRuleInput, id?: number) =>
     this.request<T.NotificationRule>(id ? "PUT" : "POST", id ? `/api/notification-rules/${id}` : "/api/notification-rules", rule);

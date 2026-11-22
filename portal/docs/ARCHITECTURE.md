@@ -26,6 +26,16 @@ A cost centre has rules that assign cost to it. One basis is used at a time: `pr
 `tag:<key>`. Shares for the same match must add up to 100% or less. The cost centre report allocates the cost from the
 SDK's cost queries.
 
+## Usage split
+
+The Usage split page (administrators only) shares the cost of agents and models between cost centres by who used them.
+Per-caller usage comes from Log Analytics (`PORTAL_LOGS_TARGET`, `PORTAL_USAGE_SOURCE`); with nothing configured the page
+shows the reason instead of numbers. A person's department comes from Microsoft Graph and is kept as a dated snapshot, and
+a department is mapped to a cost centre on the same page. A pool is a set of agents or deployments whose cost is split
+by the usage inside it; without pools the whole resource is split. Usage with no caller identity, or a department with
+no cost centre, is unattributed and either spread or shown on its own row. The design and what is still untested are in
+`foundry-finops/docs/DESIGN_USAGE_ATTRIBUTION.md`.
+
 ## Notifications
 
 * Rules choose a trigger (`event`, `percent_used`, `state`), a scope and a channel (`webhook`, `email`, `log`).

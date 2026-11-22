@@ -106,4 +106,5 @@ jobs:
         run: |
           az bicep install
           az bicep build --file portal/deploy/main.bicep --stdout > /dev/null
+          az bicep build --file foundry-finops/examples/apim/deploy/main.bicep --stdout > /dev/null
           az bicep build-params --file portal/deploy/main.bicepparam --stdout > /dev/null

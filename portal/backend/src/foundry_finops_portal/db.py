@@ -67,7 +67,33 @@ CREATE TABLE audit (
 );
 CREATE INDEX audit_at ON audit(at DESC);
 """
-_VERSION = 1
+# Schema 2: which cost centre a department's usage is charged to, and a dated record of each caller's department.
+_SCHEMA_V2 = """
+CREATE TABLE department_map (
+  department TEXT PRIMARY KEY COLLATE NOCASE,
+  cost_centre_id INTEGER NOT NULL REFERENCES cost_centres(id) ON DELETE CASCADE
+);
+CREATE TABLE department_snapshot (
+  day TEXT NOT NULL, oid TEXT NOT NULL, department TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (day, oid)
+);
+"""
+# Schema 3: pools. A pool is a named set of agents or deployments whose cost is shared out by usage.
+_SCHEMA_V3 = """
+CREATE TABLE usage_pools (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+  match_type TEXT NOT NULL CHECK (match_type IN ('agent','deployment')),
+  unattributed TEXT NOT NULL DEFAULT 'proportional' CHECK (unattributed IN ('proportional','hold'))
+);
+CREATE TABLE usage_pool_members (
+  pool_id INTEGER NOT NULL REFERENCES usage_pools(id) ON DELETE CASCADE,
+  value TEXT NOT NULL,
+  PRIMARY KEY (pool_id, value)
+);
+"""
+POOL_MATCH_TYPES = ("agent", "deployment")
+UNATTRIBUTED_MODES = ("proportional", "hold")
+_VERSION = 3
 
 
 def now_iso() -> str:
@@ -118,7 +144,10 @@ class Store:
         with self._conn() as c:
             version = c.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
-                c.executescript(_SCHEMA)
+                c.executescript(_SCHEMA + _SCHEMA_V2 + _SCHEMA_V3)
+                c.execute(f"PRAGMA user_version = {_VERSION}")
+            elif version in (1, 2):
+                c.executescript((_SCHEMA_V2 if version == 1 else "") + _SCHEMA_V3)
                 c.execute(f"PRAGMA user_version = {_VERSION}")
             elif version > _VERSION:
                 raise RuntimeError(f"{self.path} was written by a newer portal (schema {version})")
@@ -264,6 +293,107 @@ class Store:
     def delete_rule(self, rule_id: int) -> bool:
         with self._conn() as c:
             return c.execute("DELETE FROM allocation_rules WHERE id = ?", (rule_id,)).rowcount > 0
+
+    # ------------------------------------------------- departments and usage split
+    def set_department_map(self, department: str, cc_id: int) -> dict[str, Any]:
+        """Charge the usage of people in ``department`` (matched ignoring case and surrounding spaces) to a cost centre."""
+        department = department.strip()
+        if not department:
+            raise ValueError("department is required")
+        if self.get_cost_centre(cc_id) is None:
+            raise ValueError("No such cost centre")
+        with self._conn() as c:
+            c.execute("INSERT INTO department_map(department, cost_centre_id) VALUES (?, ?) "
+                      "ON CONFLICT(department) DO UPDATE SET cost_centre_id = excluded.cost_centre_id", (department, cc_id))
+        return {"department": department, "cost_centre_id": cc_id}
+
+    def delete_department_map(self, department: str) -> bool:
+        with self._conn() as c:
+            return c.execute("DELETE FROM department_map WHERE department = ?", (department.strip(),)).rowcount > 0
+
+    def list_department_map(self) -> list[dict[str, Any]]:
+        with self._conn() as c:
+            return self._rows(c.execute(
+                "SELECT m.department, m.cost_centre_id, cc.code AS cost_centre_code FROM department_map m "
+                "JOIN cost_centres cc ON cc.id = m.cost_centre_id ORDER BY m.department"))
+
+    def snapshot_departments(self, day: str, departments: dict[str, str]) -> None:
+        """Record each person's department as it was on ``day``. Later days never overwrite earlier ones."""
+        with self._conn() as c:
+            c.executemany("INSERT OR REPLACE INTO department_snapshot(day, oid, department) VALUES (?,?,?)",
+                          [(day, oid, (dept or "").strip()) for oid, dept in departments.items()])
+
+    def latest_departments(self, oids: list[str]) -> dict[str, tuple[str, str]]:
+        """``{oid: (day, department)}`` from each person's most recent snapshot. People never looked up are absent."""
+        if not oids:
+            return {}
+        out: dict[str, tuple[str, str]] = {}
+        with self._conn() as c:
+            for i in range(0, len(oids), 500):  # SQLite limits the number of parameters in one statement
+                chunk = oids[i:i + 500]
+                marks = ",".join("?" * len(chunk))
+                for r in c.execute(
+                        f"SELECT s.oid, s.day, s.department FROM department_snapshot s JOIN "
+                        f"(SELECT oid, MAX(day) AS day FROM department_snapshot WHERE oid IN ({marks}) GROUP BY oid) m "
+                        f"ON m.oid = s.oid AND m.day = s.day", chunk):
+                    out[r["oid"]] = (r["day"], r["department"])
+        return out
+
+    # ------------------------------------------------------------------ pools
+    def list_pools(self) -> list[dict[str, Any]]:
+        with self._conn() as c:
+            pools = self._rows(c.execute("SELECT * FROM usage_pools ORDER BY name"))
+            members = self._rows(c.execute("SELECT pool_id, value FROM usage_pool_members ORDER BY value"))
+        for p in pools:
+            p["values"] = [m["value"] for m in members if m["pool_id"] == p["id"]]
+        return pools
+
+    def get_pool(self, pool_id: int) -> dict[str, Any] | None:
+        return next((p for p in self.list_pools() if p["id"] == pool_id), None)
+
+    def save_pool(self, name: str, match_type: str, values: list[str], unattributed: str = "proportional",
+                  pool_id: int | None = None) -> dict[str, Any]:
+        """Create or replace a pool.
+
+        Every pool uses the same basis (agent or deployment) and no value is in two pools. Otherwise the same cost would
+        be shared out twice, once under each pool.
+        """
+        name = name.strip()
+        values = sorted({v.strip() for v in values if v.strip()})
+        if not name:
+            raise ValueError("A pool needs a name")
+        if match_type not in POOL_MATCH_TYPES:
+            raise ValueError(f"match_type must be one of {POOL_MATCH_TYPES}")
+        if unattributed not in UNATTRIBUTED_MODES:
+            raise ValueError(f"unattributed must be one of {UNATTRIBUTED_MODES}")
+        if not values:
+            raise ValueError("A pool needs at least one agent or deployment")
+        others = [p for p in self.list_pools() if p["id"] != pool_id]
+        mixed = next((p for p in others if p["match_type"] != match_type), None)
+        if mixed is not None:
+            raise ValueError(f"All pools use the same basis so cost isn't counted twice; pool {mixed['name']!r} uses "
+                             f"{mixed['match_type']}")
+        taken = {v: p["name"] for p in others for v in p["values"]}
+        clash = sorted(v for v in values if v in taken)
+        if clash:
+            raise ValueError(f"{clash[0]!r} is already in pool {taken[clash[0]]!r}; a value can be in one pool only")
+        with self._conn() as c:
+            if pool_id is None:
+                cur = c.execute("INSERT INTO usage_pools(name, match_type, unattributed) VALUES (?,?,?)",
+                                (name, match_type, unattributed))
+                pool_id = int(cur.lastrowid or 0)
+            else:
+                c.execute("UPDATE usage_pools SET name=?, match_type=?, unattributed=? WHERE id=?",
+                          (name, match_type, unattributed, pool_id))
+                c.execute("DELETE FROM usage_pool_members WHERE pool_id = ?", (pool_id,))
+            c.executemany("INSERT INTO usage_pool_members(pool_id, value) VALUES (?,?)", [(pool_id, v) for v in values])
+        found = self.get_pool(pool_id)
+        assert found is not None
+        return found
+
+    def delete_pool(self, pool_id: int) -> bool:
+        with self._conn() as c:
+            return c.execute("DELETE FROM usage_pools WHERE id = ?", (pool_id,)).rowcount > 0
 
     # ------------------------------------------------------ notification rules
     def list_notification_rules(self) -> list[dict[str, Any]]:

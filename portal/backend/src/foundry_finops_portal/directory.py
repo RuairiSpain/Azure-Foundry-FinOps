@@ -19,6 +19,7 @@ class DirectoryUser:
     upn: str
     display_name: str
     enabled: bool = True
+    department: str = ""
 
 
 class Directory(Protocol):
@@ -44,14 +45,14 @@ class GraphDirectory:
             return None  # never put free text into the Graph URL
         token = self._credential.get_token(self.SCOPE).token
         url = f"https://graph.microsoft.com/v1.0/users/{urllib.parse.quote(identifier, safe='')}"
-        resp = self._session.get(url, params={"$select": "id,userPrincipalName,displayName,accountEnabled"},
+        resp = self._session.get(url, params={"$select": "id,userPrincipalName,displayName,accountEnabled,department"},
                                  headers={"Authorization": f"Bearer {token}"}, timeout=20)
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
         d = resp.json()
         return DirectoryUser(d["id"], d.get("userPrincipalName", ""), d.get("displayName") or "",
-                             bool(d.get("accountEnabled", True)))
+                             bool(d.get("accountEnabled", True)), (d.get("department") or "").strip())
 
 
 class StaticDirectory:

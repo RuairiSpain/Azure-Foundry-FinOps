@@ -12,11 +12,13 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
+from foundry_finops.analysis import UNATTRIBUTED, allocate_by_usage
 from foundry_finops.models import project_budget as pick_project_budget
 from foundry_finops.service import cost_control_from_payload
 
 from .access import Access
 from .db import Store
+from .directory import Directory
 
 NEEDS_ACCOUNT = ("This view is for the whole Foundry resource, and your portal access is limited to projects. "
                  "Ask a portal administrator for access to the resource.")
@@ -376,6 +378,122 @@ class Views:
                 "note": "A rule gives a cost centre a share of one value of one dimension (a project, agent, deployment "
                         "or tag value). Only rules of the chosen basis count, so no cost is counted twice. A cost "
                         "centre is a reporting label in this portal; it is not written to Azure."}
+
+    def usage_split(self, days: int, unattributed: str | None, directory: Directory | None,
+                    pool: int | None = None) -> dict[str, Any]:
+        """Split cost between cost centres by each person's usage and department.
+
+        With no pools defined the pool is the whole resource's cost. With pools, each pool's cost (its agents or
+        deployments) is split by the usage inside that pool, and the cost outside every pool is reported, not split.
+        ``unattributed`` overrides each pool's own setting. Administrators only: the input is per-person usage, and the
+        result has no per-person rows. Usage with no caller identity, and callers whose department has no cost centre,
+        are *unattributed*: attribution is optional.
+        """
+        if not self.access.is_admin:
+            raise HTTPException(403, "Portal administrators only")
+        if unattributed not in (None, "proportional", "hold"):
+            raise HTTPException(400, "unattributed must be 'proportional' or 'hold'")
+        try:
+            records = list(self.backend.usage_by_caller(days))
+        except NotImplementedError as exc:
+            raise HTTPException(501, str(exc)) from exc
+        # Estimated cost when the records carry it; tokens otherwise (the gateway log has no price). Tokens ignore the
+        # price difference between models, so the report says which measure it used.
+        measure = "cost" if sum(float(r.get("cost") or 0) for r in records) > 0 else "tokens"
+        total = round(sum(self._values_by_basis("project", days, None).values()), 2)
+        if not records or total <= 0:
+            raise HTTPException(404, "There is no usage in this period to split")
+
+        departments = self._departments({str(r.get("caller_oid") or "") for r in records} - {""}, directory)
+        centres = {cc["id"]: cc for cc in self.store.list_cost_centres()}
+        by_department = {m["department"].casefold(): centres[m["cost_centre_id"]]["code"]
+                         for m in self.store.list_department_map() if m["cost_centre_id"] in centres}
+        names = {cc["code"]: cc["name"] for cc in centres.values()}
+
+        def resolve(oid: str) -> str | None:
+            return by_department.get(departments.get(oid, "").casefold())
+
+        def split(pool_cost: float, subset: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+            unmapped: dict[str, float] = defaultdict(float)
+            for r in subset:
+                oid = str(r.get("caller_oid") or "")
+                if oid and resolve(oid) is None:
+                    unmapped[departments.get(oid) or "(no department)"] += float(r.get(measure) or 0)
+            try:
+                result = allocate_by_usage(pool_cost, subset, resolve, measure=measure, unattributed=mode)
+            except ValueError:   # nothing recorded for this pool: all of it is unattributed, and the report says so
+                result = {"rows": [{"key": UNATTRIBUTED, "allocated": pool_cost, "share_percent": 100.0}] if pool_cost else [],
+                          "coverage_percent": 0.0, "unattributed_percent": 100.0, "mode": mode}
+            rows = [{"code": r["key"], "name": names.get(r["key"], "Usage with no cost centre"),
+                     "allocated": r["allocated"], "share_percent": r["share_percent"]} for r in result["rows"]]
+            return {"total": pool_cost, "mode": result["mode"], "coverage_percent": result["coverage_percent"],
+                    "unattributed_percent": result["unattributed_percent"], "rows": rows,
+                    "unmapped_departments": [{"department": d, "usage": round(c, 2)}
+                                             for d, c in sorted(unmapped.items(), key=lambda kv: -kv[1])]}
+
+        weighted = "estimated cost" if measure == "cost" else "tokens (which ignore price differences between models)"
+        common = {"days": days, "currency": "USD", "measure": measure, "unattributed_code": UNATTRIBUTED}
+        how = (f"An allocation, not billed cost, weighted by recorded {weighted}. Each cost centre gets the share of "
+               "recorded usage made by people whose department is mapped to it. Calls with no caller identity, and "
+               "people whose department has no cost centre, are unattributed")
+
+        pools = self.store.list_pools()
+        if pool is not None:
+            pools = [p for p in pools if p["id"] == pool]
+            if not pools:
+                raise HTTPException(404, "No such pool")
+        if not pools:
+            mode = unattributed or "proportional"
+            spread = "spread over the cost centres in proportion to their usage." if mode == "proportional" \
+                else "shown on their own row."
+            return {**common, **split(total, records, mode), "pools": [],
+                    "note": f"{how}: {spread} The pool is the whole Foundry resource's cost."}
+
+        out_pools = []
+        totals: dict[str, float] = defaultdict(float)
+        pooled = 0.0
+        for p in pools:
+            kind = p["match_type"]
+            values = self._values_by_basis(kind, days, None)
+            members = set(p["values"])
+            cost = round(sum(c for v, c in values.items() if v in members), 2)
+            subset = [r for r in records if str(r.get(kind) or "") in members]
+            entry = split(cost, subset, unattributed or p["unattributed"])
+            entry.update({"id": p["id"], "name": p["name"], "match_type": kind, "values": p["values"],
+                          "matched_usage": bool(subset)})
+            out_pools.append(entry)
+            pooled += cost
+            for row in entry["rows"]:
+                totals[row["code"]] += row["allocated"]
+        return {
+            **common, "pools": out_pools,
+            "totals": sorted(({"code": c, "name": names.get(c, "Usage with no cost centre"), "allocated": round(v, 2)}
+                              for c, v in totals.items()), key=lambda r: -r["allocated"]),
+            "pooled_cost": round(pooled, 2), "unpooled_cost": round(max(0.0, total - pooled), 2),
+            "note": f"{how}, as each pool's setting says. Pool members are matched to usage records by exactly the same "
+                    "name as the billing data, so an agent recorded under another name (a client ID, for example) finds no "
+                    "usage; the pool then says so. Cost outside every pool is not split here; the cost centre report's "
+                    "percentage rules still apply to it."}
+
+    def _departments(self, oids: set[str], directory: Directory | None) -> dict[str, str]:
+        """Each person's department from the latest dated snapshot, asking the directory only for people not yet recorded.
+
+        A person who had no department is asked again on a later day. Earlier days are never rewritten, so a report for
+        a past period isn't changed by someone moving department afterwards.
+        """
+        today = datetime.now(timezone.utc).date().isoformat()
+        known = self.store.latest_departments(sorted(oids))
+        stale = [o for o in oids if o not in known or (not known[o][1] and known[o][0] < today)]
+        fresh: dict[str, str] = {}
+        for oid in stale:
+            try:
+                user = directory.lookup(oid) if directory is not None else None
+            except Exception:  # Graph being unavailable must not stop the report; the person stays unattributed
+                user = None
+            fresh[oid] = user.department if user is not None else ""
+        if fresh:
+            self.store.snapshot_departments(today, fresh)
+        return {**{o: d for o, (_, d) in known.items()}, **fresh}
 
     def _centre_series(self, days: int, visible: set[str] | None) -> dict[str, Any]:
         recs = self._project_cost_records(days, visible)

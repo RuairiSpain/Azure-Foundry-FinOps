@@ -26,8 +26,11 @@ def seed_demo(store: Store) -> None:
         ("CC-MKT", "Marketing", "", 1200.0, [("project", "marketing-gen", 100)]),
         ("CC-PLAT", "AI platform", ALICE, 600.0, [("project", "dev-sandbox", 100)]),
     ]
+    departments = {"CC-RISK": "Risk", "CC-SUP": "Support", "CC-PLAT": "Platform"}   # Finance is left unmapped on purpose
     for code, name, owner, budget, rules in plan:
         cc = store.save_cost_centre(code, name, owner, "", budget)
+        if code in departments:
+            store.set_department_map(departments[code], cc["id"])
         for kind, value, share in rules:
             store.add_rule(cc["id"], kind, value, share_percent=share)
     store.save_notification_rule({"name": "Risk: alert events", "scope_type": "project", "scope_value": "fraud-risk",

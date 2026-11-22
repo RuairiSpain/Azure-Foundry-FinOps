@@ -47,6 +47,7 @@ fs.mkdirSync(out, { recursive: true });
   await page.waitForLoadState("networkidle");
   await shot("07-project-fraud-risk");
   await go("Cost centres", "08-cost-centres");
+  await go("Usage split", "08b-usage-split");
   await go("Notifications", "09-notifications");
   await go("Budgets & tags", "10-budgets");
   await go("Admin", "11-admin");
