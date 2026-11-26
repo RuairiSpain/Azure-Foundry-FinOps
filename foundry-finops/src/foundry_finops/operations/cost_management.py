@@ -299,6 +299,39 @@ class CostManagementOperations(_Operations):
     def delete_export(self, name: str, *, scope: str | None = None) -> None:
         self._arm("DELETE", f"{self._exports(scope)}/{self._seg(name)}", self._v.cost_management)
 
+    # --------------------------------------------------- cost allocation rules
+    def _allocation_rules(self, billing_account_id: str) -> str:
+        account = self._seg(billing_account_id, "billing_account_id")
+        return (f"/providers/Microsoft.Billing/billingAccounts/{account}"
+                "/providers/Microsoft.CostManagement/costAllocationRules")
+
+    def list_cost_allocation_rules(self, billing_account_id: str, *, api_version: str | None = None) -> list[dict[str, Any]]:
+        """The allocation rules of a billing account. Needs an agreement type that supports them (see ``allocation_rules``)."""
+        from ..allocation_rules import ALLOCATION_RULES_API_VERSION
+
+        url = self._allocation_rules(billing_account_id)
+        return list(self._list(url, api_version or ALLOCATION_RULES_API_VERSION))
+
+    def put_cost_allocation_rule(self, billing_account_id: str, name: str, rule: Mapping[str, Any], *,
+                                 api_version: str | None = None) -> dict[str, Any]:
+        """Create or replace an allocation rule. Build ``rule`` with :func:`foundry_finops.allocation_rules.cost_allocation_rule`.
+
+        A rule built there is ``NotActive`` unless you ask otherwise, so it changes no cost until activated. This is a
+        billing-account write: the caller needs the right on the account, and Azure applies active rules to cost.
+        """
+        from ..allocation_rules import ALLOCATION_RULES_API_VERSION, check_rule_name
+
+        if "properties" not in rule:
+            raise ValueError("rule must be the request body, with a 'properties' key")
+        url = f"{self._allocation_rules(billing_account_id)}/{self._seg(check_rule_name(name), 'rule name')}"
+        return dict(self._arm("PUT", url, api_version or ALLOCATION_RULES_API_VERSION, body=dict(rule)).body or {})
+
+    def delete_cost_allocation_rule(self, billing_account_id: str, name: str, *, api_version: str | None = None) -> None:
+        from ..allocation_rules import ALLOCATION_RULES_API_VERSION, check_rule_name
+
+        url = f"{self._allocation_rules(billing_account_id)}/{self._seg(check_rule_name(name), 'rule name')}"
+        self._arm("DELETE", url, api_version or ALLOCATION_RULES_API_VERSION)
+
     # --------------------------------------------------------- tag inheritance
     def set_tag_inheritance(self, enabled: bool = True, *, prefer_container_tags: bool = False,
                             scope: str | None = None, api_version: str | None = None) -> dict[str, Any]:
