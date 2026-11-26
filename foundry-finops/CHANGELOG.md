@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Optional caller identity on usage records: `caller_oid`, `caller_tid` and `agent_id` through `finops_context`, a derived
+  `caller_type` (`user`, `agent` or `unknown`; no identity is never an error), and `tracing.identity_from_claims` for
+  claims of a token you have already validated.
+- `analysis.allocate_by_usage` splits a shared cost between cost centres by usage. Usage with no identity is
+  unattributed (spread or held back), and with `idle="hold"` the part of a fixed cost that no call used is shown as an
+  `(idle capacity)` row.
+- `analysis.reconcile_usage` compares the tokens in your records with Azure Monitor's count per deployment.
+- `allocation_rules.cost_allocation_rule` builds the request body for Cost Management's cost allocation rules
+  (API 2024-08-01, `NotActive` by default, documented limits enforced), and `fo.cost` gains
+  `list_cost_allocation_rules`, `put_cost_allocation_rule` and `delete_cost_allocation_rule`. Tested against a fake only.
+- `queries.usage_by_caller` builds the KQL that reads per-caller usage from Log Analytics; `Settings.usage_source`.
+- `examples/apim`: a prototype gateway policy that records caller identity, with a Bicep template and deploy and smoke-test
+  scripts. Not yet run against a real subscription.
+
 ## 0.2.0 – 2026-11-21
 
 Breaking release: `FinOpsClient` now is the Microsoft client, so moving to the Microsoft SDKs is a change of imports.
