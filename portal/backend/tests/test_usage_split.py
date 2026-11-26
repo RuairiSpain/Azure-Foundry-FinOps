@@ -90,7 +90,7 @@ def test_an_existing_version_1_database_gains_the_new_tables(tmp_path):
     Store(path)  # creates the current schema
     con = sqlite3.connect(path)
     con.executescript("DROP TABLE department_map; DROP TABLE department_snapshot; DROP TABLE usage_pool_members; "
-                      "DROP TABLE usage_pools; PRAGMA user_version = 1;")
+                      "DROP TABLE usage_pools; DROP TABLE agent_aliases; PRAGMA user_version = 1;")
     con.close()
     store = Store(path)
     assert store.list_department_map() == [] and store.list_pools() == []
@@ -285,7 +285,168 @@ def test_a_version_2_database_gains_the_pool_tables(tmp_path):
     path = str(tmp_path / "v2.db")
     Store(path)
     con = sqlite3.connect(path)
-    con.executescript("DROP TABLE usage_pool_members; DROP TABLE usage_pools; PRAGMA user_version = 2;")
+    con.executescript("DROP TABLE usage_pool_members; DROP TABLE usage_pools; DROP TABLE agent_aliases; "
+                      "PRAGMA user_version = 2;")
     con.close()
     store = Store(path)
     assert store.save_pool("p", "deployment", ["gpt-5.4"])["values"] == ["gpt-5.4"]
+
+
+def test_a_version_3_database_gains_idle_and_aliases(tmp_path):
+    import sqlite3
+
+    path = str(tmp_path / "v3.db")
+    Store(path).save_pool("old", "agent", ["a"])
+    con = sqlite3.connect(path)
+    con.executescript("DROP TABLE agent_aliases; ALTER TABLE usage_pools DROP COLUMN idle; PRAGMA user_version = 3;")
+    con.close()
+    store = Store(path)
+    assert store.list_pools()[0]["idle"] == "spread"               # an existing pool keeps today's behaviour
+    assert store.set_agent_alias("abc", "care-triage") == {"alias": "abc", "agent": "care-triage"}
+
+
+# ------------------------------------------------------ idle capacity, reconciliation, aliases, rules
+BOB_OID = "22222222-2222-2222-2222-222222222222"
+CAROL_OID = "33333333-3333-3333-3333-333333333333"
+
+
+def use_records(monkeypatch, records):
+    from foundry_finops_portal.backends import DemoBackend
+
+    monkeypatch.setattr(DemoBackend, "usage_by_caller", lambda self, days: records)
+
+
+def test_a_pool_can_show_its_unused_fixed_cost_on_its_own_row(client, monkeypatch):
+    use_records(monkeypatch, [{"caller_oid": BOB_OID, "caller_type": "user", "agent": "care-triage",
+                               "deployment": "gpt-5.4-mini", "cost": 10.0}])
+    make_pool(client, idle="hold")
+    pool = client.get("/api/cost-centres/usage-split", headers=ALICE).json()["pools"][0]
+    by = {r["code"]: r["allocated"] for r in pool["rows"]}
+    assert by["(idle capacity)"] == round(pool["total"] - 10.0, 2) == pool["idle_cost"] > 0
+    assert by["CC-RISK"] == 10.0                                 # charged for what its calls would have cost
+    assert round(sum(by.values()), 2) == pool["total"]
+    assert pool["idle"] == "hold"
+    spread = client.get("/api/cost-centres/usage-split", headers=ALICE)
+    # the default setting keeps spreading it, and still reports the figure
+    client.put(f"/api/usage-pools/{pool['id']}", headers=ALICE, json={
+        "name": "Support agents", "match_type": "agent", "values": SUPPORT_AGENTS, "idle": "spread"})
+    pool2 = client.get("/api/cost-centres/usage-split", headers=ALICE).json()["pools"][0]
+    assert "(idle capacity)" not in {r["code"] for r in pool2["rows"]} and pool2["idle_cost"] == pool["idle_cost"]
+    assert spread.status_code == 200
+
+
+def test_idle_capacity_needs_cost_so_token_only_records_spread_it_and_say_so(client, monkeypatch):
+    use_records(monkeypatch, [{"caller_oid": BOB_OID, "caller_type": "user", "agent": "care-triage",
+                               "deployment": "gpt-5.4-mini", "cost": None, "tokens": 500}])
+    make_pool(client, idle="hold")
+    pool = client.get("/api/cost-centres/usage-split", headers=ALICE).json()["pools"][0]
+    assert "(idle capacity)" not in {r["code"] for r in pool["rows"]}
+    assert "tokens" in pool["idle_note"] and pool["idle_cost"] is None
+
+
+def test_idle_must_be_a_known_setting(client):
+    r = make_pool(client, idle="park")
+    assert r.status_code == 400 and "idle" in r.json()["detail"]
+
+
+def test_reconciliation_compares_recorded_tokens_with_azure_monitor(client):
+    report = client.get("/api/cost-centres/usage-split/reconciliation", headers=ALICE).json()
+    status = {r["name"]: r["status"] for r in report["rows"]}
+    assert status["gpt-5.4"] == "ok" and status["gpt-5.4-mini"] == "ok"
+    assert status["o4-mini"] == "under" and status["model-router"] == "over"
+    assert status["text-embedding-3-large"] == "none_recorded"
+    assert report["unrecorded"] > 0 and 0 < report["coverage_percent"] < 100
+    assert report["measure"] == "tokens" and "ignoring case" in report["note"]
+
+
+def test_reconciliation_is_for_administrators_and_says_when_usage_isnt_connected(client, monkeypatch):
+    from foundry_finops_portal.backends import DemoBackend
+
+    assert client.get("/api/cost-centres/usage-split/reconciliation", headers=BOB).status_code == 403
+
+    def refuse(self, days):
+        raise NotImplementedError("Per-caller usage isn't configured. Set PORTAL_LOGS_TARGET")
+
+    monkeypatch.setattr(DemoBackend, "usage_by_caller", refuse)
+    r = client.get("/api/cost-centres/usage-split/reconciliation", headers=ALICE)
+    assert r.status_code == 501 and "PORTAL_LOGS_TARGET" in r.json()["detail"]
+
+
+def test_an_agent_recorded_under_a_client_id_is_found_once_it_is_mapped(client, monkeypatch):
+    use_records(monkeypatch, [{"caller_oid": BOB_OID, "caller_type": "user", "agent": "0a1b2c3d-client-id",
+                               "deployment": "gpt-5.4-mini", "cost": 10.0}])
+    make_pool(client)
+    before = client.get("/api/cost-centres/usage-split", headers=ALICE).json()
+    assert before["pools"][0]["matched_usage"] is False
+    assert before["unmatched_agents"] == [{"agent": "0a1b2c3d-client-id", "usage": 10.0}]   # the hint to map it
+    assert client.put("/api/agent-aliases", headers=ALICE,
+                      json={"alias": "0A1B2C3D-CLIENT-ID", "agent": "care-triage"}).status_code == 200
+    after = client.get("/api/cost-centres/usage-split", headers=ALICE).json()
+    assert after["pools"][0]["matched_usage"] is True and after["unmatched_agents"] == []
+    assert client.get("/api/agent-aliases", headers=ALICE).json() == [
+        {"alias": "0A1B2C3D-CLIENT-ID", "agent": "care-triage"}]
+    assert client.delete("/api/agent-aliases?alias=0a1b2c3d-client-id", headers=ALICE).json() == {"deleted": True}
+    assert client.get("/api/cost-centres/usage-split", headers=ALICE).json()["pools"][0]["matched_usage"] is False
+
+
+def test_bad_aliases_are_refused_and_aliases_are_for_administrators(client):
+    for body in ({"alias": "", "agent": "a"}, {"alias": "a", "agent": " "}, {"alias": "Care-Triage", "agent": "care-triage"}):
+        assert client.put("/api/agent-aliases", headers=ALICE, json=body).status_code == 400, body
+    assert client.put("/api/agent-aliases", headers=ALICE, json={"alias": "x1", "agent": "care-triage"}).status_code == 200
+    r = client.put("/api/agent-aliases", headers=ALICE, json={"alias": "y1", "agent": "x1"})
+    assert r.status_code == 400 and "itself an alias" in r.json()["detail"]
+    for who in (BOB, CAROL):
+        assert client.get("/api/agent-aliases", headers=who).status_code == 403
+        assert client.put("/api/agent-aliases", headers=who, json={"alias": "q", "agent": "r"}).status_code == 403
+
+
+def test_allocation_rules_are_built_for_review_and_never_sent(client):
+    make_pool(client)
+    out = client.get("/api/cost-centres/usage-split/allocation-rules", headers=ALICE).json()
+    assert len(out["rules"]) == 1 and out["skipped"] == []
+    rule = out["rules"][0]
+    body = rule["definition"]["properties"]
+    assert rule["name"] == "finops-Support-agents" and body["status"] == "NotActive"
+    source = body["details"]["sourceResources"][0]
+    assert source == {"resourceType": "Tag", "name": "agent.name", "values": sorted(SUPPORT_AGENTS)}
+    target = body["details"]["targetResources"][0]
+    assert target["name"] == "cost-centre" and target["policyType"] == "FixedProportion"
+    assert round(sum(v["percentage"] for v in target["values"]), 2) == 100.0
+    assert {v["name"] for v in target["values"]} == {"CC-RISK", "CC-SUP", "CC-PLAT"}   # no unattributed row
+    assert rule["excluded_percent"] == 0.0                       # unattributed usage was spread, so nothing is left out
+    assert any("nothing here has been sent" in n for n in out["notes"]) and out["api"]["api_version"] == "2024-08-01"
+    custom = client.get("/api/cost-centres/usage-split/allocation-rules?cost_centre_tag=cc&source_tag=agent", headers=ALICE)
+    assert custom.json()["rules"][0]["definition"]["properties"]["details"]["targetResources"][0]["name"] == "cc"
+
+
+def test_held_back_usage_is_left_out_of_a_rule_and_the_rest_is_renormalised(client):
+    make_pool(client, unattributed="hold")
+    rule = client.get("/api/cost-centres/usage-split/allocation-rules", headers=ALICE).json()["rules"][0]
+    assert rule["excluded_percent"] == 40.0                      # the usage no cost centre received
+    target = rule["definition"]["properties"]["details"]["targetResources"][0]
+    assert round(sum(v["percentage"] for v in target["values"]), 2) == 100.0
+    assert {v["name"]: v["percentage"] for v in target["values"]} == {"CC-RISK": 50.0, "CC-SUP": 41.67, "CC-PLAT": 8.33}
+
+
+def test_a_deployment_pool_cannot_be_an_azure_rule(client):
+    make_pool(client, "Models", "deployment", ["gpt-5.4-mini"])
+    out = client.get("/api/cost-centres/usage-split/allocation-rules", headers=ALICE).json()
+    assert out["rules"] == [] and "deployment as a source" in out["skipped"][0]["reason"]
+
+
+def test_a_pool_with_more_than_25_members_cannot_be_an_azure_rule(client):
+    make_pool(client, "Too many", values=["care-triage"] + [f"agent-{i}" for i in range(25)])
+    out = client.get("/api/cost-centres/usage-split/allocation-rules", headers=ALICE).json()
+    assert out["rules"] == [] and "at most 25" in out["skipped"][0]["reason"]
+
+
+def test_a_pool_nobody_could_be_charged_for_is_skipped(client, monkeypatch):
+    use_records(monkeypatch, [{"caller_oid": "", "caller_type": "unknown", "agent": "care-triage",
+                               "deployment": "gpt-5.4-mini", "cost": 5.0}])
+    make_pool(client)
+    out = client.get("/api/cost-centres/usage-split/allocation-rules", headers=ALICE).json()
+    assert out["rules"] == [] and "No cost centre received" in out["skipped"][0]["reason"]
+
+
+def test_allocation_rules_are_for_administrators(client):
+    assert client.get("/api/cost-centres/usage-split/allocation-rules", headers=BOB).status_code == 403

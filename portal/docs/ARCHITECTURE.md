@@ -33,7 +33,10 @@ Per-caller usage comes from Log Analytics (`PORTAL_LOGS_TARGET`, `PORTAL_USAGE_S
 shows the reason instead of numbers. A person's department comes from Microsoft Graph and is kept as a dated snapshot, and
 a department is mapped to a cost centre on the same page. A pool is a set of agents or deployments whose cost is split
 by the usage inside it; without pools the whole resource is split. Usage with no caller identity, or a department with
-no cost centre, is unattributed and either spread or shown on its own row. The design and what is still untested are in
+no cost centre, is unattributed and either spread or shown on its own row. A pool can also show the unused part of a
+fixed (provisioned) cost on its own row. The page compares the recorded tokens with Azure Monitor's count per deployment,
+maps agent names in usage records to billing agent names, and builds Azure cost allocation rule definitions for review
+(it never sends them). The design and what is still untested are in
 `foundry-finops/docs/DESIGN_USAGE_ATTRIBUTION.md`.
 
 ## Notifications

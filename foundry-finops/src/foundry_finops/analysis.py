@@ -2,7 +2,9 @@
 
 * :func:`detect_anomalies` flags days whose billed cost jumps above the group's own recent history.
 * :func:`allocate_cost` splits a cost across groups in proportion to weights **you** supply (an allocation rule).
-* :func:`allocate_by_usage` splits a shared cost between cost centres by each one's share of recorded usage.
+* :func:`allocate_by_usage` splits a shared cost between cost centres by each one's share of recorded usage, and can show
+  the part of a fixed (provisioned) cost that no call used as its own **idle capacity** line.
+* :func:`reconcile_usage` compares the tokens your records hold with what Azure Monitor counted, per deployment.
 * :func:`ptu_headroom` joins provisioned deployments, regional quota and the utilisation metric.
 
 Each function states its method and parameters in its output, so a number can always be traced back to the
@@ -27,8 +29,11 @@ from .operations.monitor import (  # noqa: F401  (project_matches re-exported fo
 
 #: Name of the row that holds usage with no caller identity, or a caller with no cost centre.
 UNATTRIBUTED = "(unattributed)"
+#: Name of the row that holds the part of a fixed cost that no recorded call used.
+IDLE = "(idle capacity)"
 
-__all__ = ["Anomaly", "allocate_by_usage", "allocate_cost", "anomalies_from_table", "detect_anomalies", "ptu_headroom"]
+__all__ = ["IDLE", "UNATTRIBUTED", "Anomaly", "allocate_by_usage", "allocate_cost", "anomalies_from_table",
+           "detect_anomalies", "ptu_headroom", "reconcile_usage"]
 
 
 # ------------------------------------------------------------------- anomalies
@@ -166,6 +171,7 @@ def allocate_by_usage(
     *,
     measure: str = "cost",
     unattributed: str = "proportional",
+    idle: str = "spread",
     decimals: int = 2,
 ) -> dict[str, Any]:
     """Split a shared cost between cost centres by each one's share of recorded usage.
@@ -180,11 +186,23 @@ def allocate_by_usage(
     own share, so nobody is charged for usage nobody can name. Either way the parts add up to ``total`` exactly (see
     :func:`allocate_cost`). With no attributed usage at all, the whole amount is ``(unattributed)``.
 
-    Returns ``{"rows", "coverage_percent", "unattributed_percent", "mode"}``. The result is an allocation, not billed
-    cost.
+    **Idle capacity.** A provisioned (PTU) deployment costs the same whatever is used. With ``measure="cost"`` the records
+    hold the estimated cost of the calls, so ``total`` minus their sum is the part nobody used. ``idle="spread"`` (the
+    default) keeps today's behaviour: that part is spread with the rest, in proportion to usage. ``idle="hold"`` gives it
+    its own ``(idle capacity)`` row, so cost centres are charged only for what their calls would have cost. When the calls
+    cost more than the total there is no idle part. ``idle="hold"`` needs ``measure="cost"``: tokens can't be compared with
+    money.
+
+    Returns ``{"rows", "coverage_percent", "unattributed_percent", "mode", "idle", "idle_cost"}``. ``idle_cost`` is the
+    unused part when ``measure="cost"`` (also in spread mode, as information), else ``None``. The result is an allocation,
+    not billed cost.
     """
     if unattributed not in ("proportional", "hold"):
         raise ValueError("unattributed must be 'proportional' or 'hold'")
+    if idle not in ("spread", "hold"):
+        raise ValueError("idle must be 'spread' or 'hold'")
+    if idle == "hold" and measure != "cost":
+        raise ValueError("Idle capacity can only be shown for a cost measure: tokens can't be compared with money")
     weights: dict[str, float] = {}
     known = unknown = 0.0
     for call in calls:
@@ -203,9 +221,94 @@ def allocate_by_usage(
     coverage = round(known / (known + unknown) * 100, 2)
     if known <= 0 or (unattributed == "hold" and unknown > 0):
         weights[UNATTRIBUTED] = unknown
-    rows = allocate_cost(total, {k: v for k, v in weights.items() if v > 0}, decimals=decimals)
+    idle_cost: float | None = None
+    if measure == "cost":
+        idle_cost = round(max(0.0, total - (known + unknown)), decimals)
+    share_of = total
+    if idle == "hold" and idle_cost:
+        share_of = round(total - idle_cost, decimals)
+    rows = allocate_cost(share_of, {k: v for k, v in weights.items() if v > 0}, decimals=decimals)
+    if idle == "hold" and idle_cost:
+        rows.append({"key": IDLE, "weight": idle_cost, "share_percent": round(idle_cost / total * 100, 4) if total else 0.0,
+                     "allocated": idle_cost})
+        for r in rows:   # shares are of the whole total, not of the part that was split
+            r["share_percent"] = round(r["allocated"] / total * 100, 4) if total else 0.0
+        rows.sort(key=lambda r: -r["allocated"])
     return {"rows": rows, "coverage_percent": coverage, "unattributed_percent": round(100 - coverage, 2),
-            "mode": unattributed}
+            "mode": unattributed, "idle": idle, "idle_cost": idle_cost}
+
+
+# ------------------------------------------------------------------ reconciliation
+def reconcile_usage(
+    records: Iterable[Mapping[str, Any]],
+    monitor: Mapping[str, float],
+    *,
+    key: str = "deployment",
+    measure: str = "tokens",
+    tolerance_percent: float = 5.0,
+) -> dict[str, Any]:
+    """Compare what your usage records hold with what Azure Monitor counted, per deployment.
+
+    ``records`` carry a ``deployment`` (or whatever ``key`` names) and a number under ``measure``; ``monitor`` maps a
+    deployment name to the total Azure Monitor reported for the same period. Names are matched ignoring case. Each row
+    says how much of Azure's total your records hold (``coverage_percent``) and a ``status``:
+
+    * ``ok``: within ``tolerance_percent`` of Azure's number
+    * ``under``: your records hold less. Some calls bypass the tracker or the gateway, or records were sampled away.
+    * ``over``: your records hold more. Calls may be counted twice, or the period or the deployment name differs.
+    * ``none_recorded``: Azure counted usage and your records hold none for this deployment
+    * ``not_in_monitor``: your records name a deployment Azure Monitor didn't report (a model name, a typo, another resource)
+
+    The totals only add up deployments that appear on both sides, so one wrong name can't hide a gap. ``unrecorded``
+    is the amount Azure counted that no record accounts for.
+    """
+    if tolerance_percent < 0:
+        raise ValueError("tolerance_percent can't be negative")
+    recorded: dict[str, float] = {}
+    label: dict[str, str] = {}
+    for r in records:
+        name = str(r.get(key) or "")
+        value = float(r.get(measure) or 0)
+        if value < 0:
+            raise ValueError(f"{measure} can't be negative")
+        recorded[name.casefold()] = recorded.get(name.casefold(), 0.0) + value
+        label.setdefault(name.casefold(), name or "(no deployment recorded)")
+    azure = {str(k).casefold(): float(v) for k, v in monitor.items()}
+    for k in monitor:
+        label[str(k).casefold()] = str(k)      # show Azure's spelling of a name both sides have
+    rows: list[dict[str, Any]] = []
+    for name in sorted(set(recorded) | set(azure)):
+        rec, az = recorded.get(name, 0.0), azure.get(name)
+        if az is None and rec <= 0:
+            continue     # a name only your side has, with nothing recorded under it: nothing to reconcile
+        if az is None:
+            status, coverage = "not_in_monitor", None
+        elif az <= 0:
+            status, coverage = ("ok" if rec <= 0 else "over"), None
+        else:
+            coverage = round(rec / az * 100, 2)
+            if rec <= 0:
+                status = "none_recorded"
+            elif rec < az * (1 - tolerance_percent / 100):
+                status = "under"
+            elif rec > az * (1 + tolerance_percent / 100):
+                status = "over"
+            else:
+                status = "ok"
+        rows.append({"name": label[name], "recorded": round(rec, 4), "azure": None if az is None else round(az, 4),
+                     "difference": None if az is None else round(az - rec, 4), "coverage_percent": coverage,
+                     "status": status})
+    rows.sort(key=lambda r: -abs(r["difference"] or r["recorded"]))
+    both = [r for r in rows if r["azure"] is not None]
+    az_total = sum(r["azure"] for r in both)
+    rec_total = sum(r["recorded"] for r in both)
+    return {
+        "rows": rows, "measure": measure, "key": key, "tolerance_percent": tolerance_percent,
+        "azure_total": round(az_total, 4), "recorded_total": round(rec_total, 4),
+        "coverage_percent": round(rec_total / az_total * 100, 2) if az_total > 0 else None,
+        "unrecorded": round(sum(max(0.0, r["difference"]) for r in both), 4),
+        "not_in_monitor": [r["name"] for r in rows if r["status"] == "not_in_monitor"],
+    }
 
 
 # ------------------------------------------------------------------- PTU report

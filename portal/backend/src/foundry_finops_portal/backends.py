@@ -55,17 +55,37 @@ DEMO_CALLERS: tuple[tuple[str, str, float], ...] = (
 )
 
 
+#: Illustrative: how much of each deployment's Azure Monitor tokens the demo records hold, so reconciliation shows every
+#: status: close enough, well under, over, and a deployment with no records at all (text-embedding-3-large).
+DEMO_TRACED = {"gpt-5.4": 0.98, "gpt-5.4-mini": 0.97, "o4-mini": 0.6, "model-router": 1.12}
+
+
 class DemoBackend(DemoService):
     """Illustrative data. Writes change the in-memory demo store."""
 
     def usage_by_caller(self, days: int) -> list[dict[str, Any]]:
-        """Each agent's cost shared out between the demo callers, with the agent and its model deployment on every row."""
+        """Each agent's cost shared out between the demo callers, with the agent and its model deployment on every row.
+
+        Tokens are a share of what Azure Monitor counted for the deployment (see ``DEMO_TRACED``), split like the cost.
+        """
         out = []
         for row in self.cost_by_project_agent(days):
             deployment = demo_data.AGENT_MODEL.get(row["agent"], "")
             for oid, kind, share in DEMO_CALLERS:
                 out.append({"caller_oid": oid, "caller_type": kind, "agent": row["agent"], "deployment": deployment,
-                            "cost": round(row["cost"] * share, 4)})
+                            "cost": round(row["cost"] * share, 4), "tokens": 0, "calls": 0})
+        monitor: dict[str, float] = defaultdict(float)
+        names = [c["name"] for c in self.token_series("deployment", days * 24)["columns"]]
+        for r in self.token_series("deployment", days * 24)["rows"]:
+            rec = dict(zip(names, r, strict=False))
+            monitor[str(rec["deployment"])] += float(rec["TotalTokens"] or 0)
+        cost_of: dict[str, float] = defaultdict(float)
+        for r in out:
+            cost_of[r["deployment"]] += r["cost"]
+        for r in out:
+            dep = r["deployment"]
+            if cost_of[dep] > 0:
+                r["tokens"] = round(monitor.get(dep, 0.0) * DEMO_TRACED.get(dep, 1.0) * r["cost"] / cost_of[dep])
         return out
 
     def list_projects(self) -> list[dict[str, Any]]:

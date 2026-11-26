@@ -12,7 +12,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from foundry_finops.analysis import UNATTRIBUTED, allocate_by_usage
+from foundry_finops.allocation_rules import ALLOCATION_RULES_API_VERSION, cost_allocation_rule, rule_name
+from foundry_finops.analysis import IDLE, UNATTRIBUTED, allocate_by_usage, reconcile_usage
 from foundry_finops.models import project_budget as pick_project_budget
 from foundry_finops.service import cost_control_from_payload
 
@@ -397,6 +398,9 @@ class Views:
             records = list(self.backend.usage_by_caller(days))
         except NotImplementedError as exc:
             raise HTTPException(501, str(exc)) from exc
+        aliases = {a["alias"].casefold(): a["agent"] for a in self.store.list_agent_aliases()}
+        records = [{**r, "agent": aliases.get(str(r.get("agent") or "").casefold(), str(r.get("agent") or ""))}
+                   for r in records]
         # Estimated cost when the records carry it; tokens otherwise (the gateway log has no price). Tokens ignore the
         # price difference between models, so the report says which measure it used.
         measure = "cost" if sum(float(r.get("cost") or 0) for r in records) > 0 else "tokens"
@@ -409,25 +413,29 @@ class Views:
         by_department = {m["department"].casefold(): centres[m["cost_centre_id"]]["code"]
                          for m in self.store.list_department_map() if m["cost_centre_id"] in centres}
         names = {cc["code"]: cc["name"] for cc in centres.values()}
+        names[IDLE] = "Provisioned capacity nobody used"
 
         def resolve(oid: str) -> str | None:
             return by_department.get(departments.get(oid, "").casefold())
 
-        def split(pool_cost: float, subset: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+        def split(pool_cost: float, subset: list[dict[str, Any]], mode: str, idle: str = "spread") -> dict[str, Any]:
             unmapped: dict[str, float] = defaultdict(float)
             for r in subset:
                 oid = str(r.get("caller_oid") or "")
                 if oid and resolve(oid) is None:
                     unmapped[departments.get(oid) or "(no department)"] += float(r.get(measure) or 0)
             try:
-                result = allocate_by_usage(pool_cost, subset, resolve, measure=measure, unattributed=mode)
+                result = allocate_by_usage(pool_cost, subset, resolve, measure=measure, unattributed=mode,
+                                           idle=idle if measure == "cost" else "spread")
             except ValueError:   # nothing recorded for this pool: all of it is unattributed, and the report says so
                 result = {"rows": [{"key": UNATTRIBUTED, "allocated": pool_cost, "share_percent": 100.0}] if pool_cost else [],
-                          "coverage_percent": 0.0, "unattributed_percent": 100.0, "mode": mode}
+                          "coverage_percent": 0.0, "unattributed_percent": 100.0, "mode": mode, "idle": "spread",
+                          "idle_cost": None}
             rows = [{"code": r["key"], "name": names.get(r["key"], "Usage with no cost centre"),
                      "allocated": r["allocated"], "share_percent": r["share_percent"]} for r in result["rows"]]
             return {"total": pool_cost, "mode": result["mode"], "coverage_percent": result["coverage_percent"],
                     "unattributed_percent": result["unattributed_percent"], "rows": rows,
+                    "idle": result["idle"], "idle_cost": result["idle_cost"],
                     "unmapped_departments": [{"department": d, "usage": round(c, 2)}
                                              for d, c in sorted(unmapped.items(), key=lambda kv: -kv[1])]}
 
@@ -438,6 +446,7 @@ class Views:
                "people whose department has no cost centre, are unattributed")
 
         pools = self.store.list_pools()
+        unmatched = self._unmatched_agents(records, measure, days) if any(p["match_type"] == "agent" for p in pools) else []
         if pool is not None:
             pools = [p for p in pools if p["id"] == pool]
             if not pools:
@@ -446,7 +455,7 @@ class Views:
             mode = unattributed or "proportional"
             spread = "spread over the cost centres in proportion to their usage." if mode == "proportional" \
                 else "shown on their own row."
-            return {**common, **split(total, records, mode), "pools": [],
+            return {**common, **split(total, records, mode), "pools": [], "unmatched_agents": [],
                     "note": f"{how}: {spread} The pool is the whole Foundry resource's cost."}
 
         out_pools = []
@@ -455,18 +464,21 @@ class Views:
         for p in pools:
             kind = p["match_type"]
             values = self._values_by_basis(kind, days, None)
-            members = set(p["values"])
-            cost = round(sum(c for v, c in values.items() if v in members), 2)
-            subset = [r for r in records if str(r.get(kind) or "") in members]
-            entry = split(cost, subset, unattributed or p["unattributed"])
+            members = {v.casefold() for v in p["values"]}
+            cost = round(sum(c for v, c in values.items() if v.casefold() in members), 2)
+            subset = [r for r in records if str(r.get(kind) or "").casefold() in members]
+            entry = split(cost, subset, unattributed or p["unattributed"], p["idle"])
             entry.update({"id": p["id"], "name": p["name"], "match_type": kind, "values": p["values"],
-                          "matched_usage": bool(subset)})
+                          "matched_usage": bool(subset), "idle_setting": p["idle"]})
+            if p["idle"] == "hold" and measure != "cost":
+                entry["idle_note"] = ("Idle capacity needs estimated cost, and these records only have tokens, so it is "
+                                      "spread over the cost centres.")
             out_pools.append(entry)
             pooled += cost
             for row in entry["rows"]:
                 totals[row["code"]] += row["allocated"]
         return {
-            **common, "pools": out_pools,
+            **common, "pools": out_pools, "unmatched_agents": unmatched,
             "totals": sorted(({"code": c, "name": names.get(c, "Usage with no cost centre"), "allocated": round(v, 2)}
                               for c, v in totals.items()), key=lambda r: -r["allocated"]),
             "pooled_cost": round(pooled, 2), "unpooled_cost": round(max(0.0, total - pooled), 2),
@@ -474,6 +486,89 @@ class Views:
                     "name as the billing data, so an agent recorded under another name (a client ID, for example) finds no "
                     "usage; the pool then says so. Cost outside every pool is not split here; the cost centre report's "
                     "percentage rules still apply to it."}
+
+    def _unmatched_agents(self, records: list[dict[str, Any]], measure: str, days: int) -> list[dict[str, Any]]:
+        """Agent names in the usage records that no billing agent has. They are why a pool can find no usage.
+
+        Typically a client ID. Map each one to its billing name with an agent alias.
+        """
+        try:
+            billing = {a.casefold() for a in self._values_by_basis("agent", days, None)}
+        except HTTPException:
+            return []
+        usage: dict[str, float] = defaultdict(float)
+        for r in records:
+            agent = str(r.get("agent") or "")
+            if agent and agent.casefold() not in billing:
+                usage[agent] += float(r.get(measure) or 0)
+        return [{"agent": a, "usage": round(u, 2)} for a, u in sorted(usage.items(), key=lambda kv: -kv[1])[:20]]
+
+    def usage_reconciliation(self, days: int) -> dict[str, Any]:
+        """Compare the tokens in the usage records with the tokens Azure Monitor counted, per deployment.
+
+        A gap means calls that nothing recorded, so the split can't see who made them. Administrators only.
+        """
+        if not self.access.is_admin:
+            raise HTTPException(403, "Portal administrators only")
+        try:
+            records = list(self.backend.usage_by_caller(days))
+        except NotImplementedError as exc:
+            raise HTTPException(501, str(exc)) from exc
+        table = self.backend.token_series("deployment", days * 24)
+        monitor: dict[str, float] = defaultdict(float)
+        for r in _records(table):
+            monitor[str(r.get("deployment") or "(all)")] += float(r.get("TotalTokens") or 0)
+        result = reconcile_usage(records, monitor, key="deployment", measure="tokens")
+        return {**result, "days": days,
+                "note": "Azure Monitor counts tokens per deployment. Usage records are matched to a deployment by name, "
+                        "ignoring case. Records made with the model name instead of the deployment name show as not in "
+                        "Azure Monitor, and the deployment they belong to shows as under-recorded."}
+
+    def allocation_rules(self, days: int, target_tag: str, source_tag: str, directory: Directory | None) -> dict[str, Any]:
+        """Azure cost allocation rule definitions for this period's split, for review. Nothing is sent to Azure.
+
+        One rule per agent pool: the cost of resources tagged ``source_tag`` = each pool member moves onto resources tagged
+        ``target_tag`` = each cost centre's code, by the pool's percentages. Rules are ``NotActive``.
+        """
+        split = self.usage_split(days, None, directory, None)
+        rules, skipped = [], []
+        for p in split["pools"]:
+            if p["match_type"] != "agent":
+                skipped.append({"pool": p["name"], "reason": "Azure allocation rules can't use a deployment as a source: "
+                                                             "only a tag, a resource group or a subscription."})
+                continue
+            shares = {r["code"]: r["allocated"] for r in p["rows"] if r["code"] not in (UNATTRIBUTED, IDLE)}
+            kept = sum(shares.values())
+            if kept <= 0:
+                skipped.append({"pool": p["name"], "reason": "No cost centre received any of this pool's cost."})
+                continue
+            try:
+                definition = cost_allocation_rule(
+                    source_tag=source_tag, source_values=p["values"], target_tag=target_tag, shares=shares,
+                    description=f"{p['name']}: usage split for the last {days} days, built by Foundry FinOps")
+            except ValueError as exc:
+                skipped.append({"pool": p["name"], "reason": str(exc)})
+                continue
+            rules.append({"name": rule_name(p["name"]), "pool": p["name"],
+                          "excluded_percent": round(100 - kept / p["total"] * 100, 2) if p["total"] else 0.0,
+                          "definition": definition})
+        return {
+            "days": days, "source_tag": source_tag, "target_tag": target_tag, "rules": rules, "skipped": skipped,
+            "api": {"method": "PUT", "api_version": ALLOCATION_RULES_API_VERSION,
+                    "path": "/providers/Microsoft.Billing/billingAccounts/{billingAccountId}/providers/"
+                            "Microsoft.CostManagement/costAllocationRules/{name}"},
+            "notes": [
+                "For review only: nothing here has been sent to Azure.",
+                "Azure splits by the fixed percentages in the rule. It does not follow usage, so rebuild the rule for "
+                "each period.",
+                "A rule only moves cost onto resources that carry the target tag. A cost centre that exists only in this "
+                "portal has no resource to receive it.",
+                "Usage with no cost centre and idle capacity are left out, so the percentages cover only the cost that "
+                "reached a cost centre (see excluded_percent).",
+                "A rule lives on a billing account, and Azure supports these rules only for some agreement types.",
+                "Rules are NotActive: saved, but they change no cost until someone activates them.",
+            ],
+        }
 
     def _departments(self, oids: set[str], directory: Directory | None) -> dict[str, str]:
         """Each person's department from the latest dated snapshot, asking the directory only for people not yet recorded.

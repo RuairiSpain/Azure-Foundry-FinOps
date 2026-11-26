@@ -94,6 +94,12 @@ export class ApiClient {
 
   usageSplit = (days = 30, unattributed?: T.UnattributedMode, pool?: number) =>
     this.get<T.UsageSplit>(`/api/cost-centres/usage-split${qs({ days, unattributed, pool })}`);
+  usageReconciliation = (days = 30) => this.get<T.Reconciliation>(`/api/cost-centres/usage-split/reconciliation${qs({ days })}`);
+  allocationRules = (days = 30, costCentreTag?: string, sourceTag?: string) =>
+    this.get<T.AllocationRules>(`/api/cost-centres/usage-split/allocation-rules${qs({ days, cost_centre_tag: costCentreTag, source_tag: sourceTag })}`);
+  agentAliases = () => this.get<T.AgentAlias[]>("/api/agent-aliases");
+  setAgentAlias = (alias: string, agent: string) => this.request<T.AgentAlias>("PUT", "/api/agent-aliases", { alias, agent });
+  deleteAgentAlias = (alias: string) => this.request<{ deleted: boolean }>("DELETE", `/api/agent-aliases${qs({ alias })}`);
   usagePools = () => this.get<T.UsagePool[]>("/api/usage-pools");
   saveUsagePool = (pool: Omit<T.UsagePool, "id">, id?: number) =>
     this.request<T.UsagePool>(id ? "PUT" : "POST", id ? `/api/usage-pools/${id}` : "/api/usage-pools", pool);
