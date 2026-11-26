@@ -1217,6 +1217,46 @@ for row in result["rows"]:
 print(result["coverage_percent"])                   # share of usage that had a known cost centre
 ```
 
+**Fixed cost that nobody used.** A provisioned (PTU) deployment costs the same whatever is used. When the records hold
+the estimated cost of each call, `total` minus their sum is the part no call used. `idle="hold"` gives it its own
+`(idle capacity)` row, so cost centres are charged only for what their calls would have cost; the default `idle="spread"`
+keeps spreading it and still reports `idle_cost`. It needs `measure="cost"`: tokens can't be compared with money.
+
+**Do the records cover what Azure counted?** `reconcile_usage` compares the tokens your records hold with Azure Monitor's
+count per deployment, and says whether each deployment matches, is under- or over-recorded, has nothing recorded, or is
+named in your records but unknown to Azure Monitor.
+
+```python
+from foundry_finops.analysis import allocate_by_usage, reconcile_usage
+
+calls = [{"caller_oid": "oid-1", "cost": 6.0, "deployment": "gpt-5.4", "tokens": 900}]
+held = allocate_by_usage(100.0, calls, {"oid-1": "CC-FIN"}.get, idle="hold")
+print(held["idle_cost"], [r["key"] for r in held["rows"]])      # 94.0 ['(idle capacity)', 'CC-FIN']
+
+check = reconcile_usage(calls, {"gpt-5.4": 1000})               # Azure Monitor tokens per deployment
+print(check["coverage_percent"], check["rows"][0]["status"])    # 90.0 under
+```
+
+**Azure cost allocation rules.** `foundry_finops.allocation_rules.cost_allocation_rule` builds the request body of Cost
+Management's *Cost Allocation Rules - Create Or Update* (version 2024-08-01) and enforces its documented limits: one
+source and one target, at most 25 values each, two-decimal percentages that add up to exactly 100.00, and `NotActive` as
+the default status so a saved rule changes no cost until activated. Azure applies fixed percentages; it does not follow
+usage, so the rule is a snapshot of one period's split. The target is a tag value, so cost centres only show up if
+resources carry a tag with the cost centre's code. The rule lives on a billing account:
+
+```python
+from azure.identity import DefaultAzureCredential
+from foundry_finops import FinOpsClient
+from foundry_finops.allocation_rules import cost_allocation_rule, rule_name
+
+rule = cost_allocation_rule(source_tag="agent.name", source_values=["care-triage", "kb-answers"],
+                            target_tag="cost-centre", shares={"CC-RISK": 62.5, "CC-SUP": 37.5},
+                            description="Support agents, November")
+with FinOpsClient(DefaultAzureCredential(), "<subscription-id>") as fo:
+    fo.cost.put_cost_allocation_rule("<billing-account-id>", rule_name("Support agents"), rule)
+    print([r["name"] for r in fo.cost.list_cost_allocation_rules("<billing-account-id>")])
+```
+
 `unattributed="proportional"` spreads usage with no identity over the cost centres in proportion to their usage;
 `"hold"` shows it on a `(unattributed)` row instead. The result is an allocation, not billed cost. The design, the gateway
 policy prototype and what is still untested are in `DESIGN_USAGE_ATTRIBUTION.md` and `examples/apim/`.

@@ -308,6 +308,10 @@ export interface SplitResult {
   unmapped_departments: { department: string; usage: number }[];
 }
 export interface PoolSplit extends SplitResult {
+  /** The unused part of a fixed cost when the records carry cost; null when they only have tokens. */
+  idle_cost: number | null;
+  idle_setting: IdleMode;
+  idle_note?: string;
   id: number;
   name: string;
   match_type: "agent" | "deployment";
@@ -323,20 +327,51 @@ export interface UsageSplit extends Partial<SplitResult> {
   unattributed_code: string;
   note: string;
   pools: PoolSplit[];
+  /** Agent names in the usage records that match no billing agent, with their usage. */
+  unmatched_agents: { agent: string; usage: number }[];
   totals?: { code: string; name: string; allocated: number }[];
   pooled_cost?: number;
   unpooled_cost?: number;
 }
 export type UnattributedMode = "proportional" | "hold";
+export type IdleMode = "spread" | "hold";
 export interface UsagePool {
   id: number;
   name: string;
   match_type: "agent" | "deployment";
   unattributed: UnattributedMode;
+  idle: IdleMode;
   values: string[];
 }
 export interface DepartmentMapping {
   department: string;
   cost_centre_id: number;
   cost_centre_code: string;
+}
+
+export type ReconcileStatus = "ok" | "under" | "over" | "none_recorded" | "not_in_monitor";
+export interface Reconciliation {
+  days: number;
+  measure: string;
+  tolerance_percent: number;
+  azure_total: number;
+  recorded_total: number;
+  coverage_percent: number | null;
+  unrecorded: number;
+  not_in_monitor: string[];
+  note: string;
+  rows: { name: string; recorded: number; azure: number | null; difference: number | null; coverage_percent: number | null; status: ReconcileStatus }[];
+}
+export interface AgentAlias {
+  alias: string;
+  agent: string;
+}
+export interface AllocationRules {
+  days: number;
+  source_tag: string;
+  target_tag: string;
+  rules: { name: string; pool: string; excluded_percent: number; definition: Record<string, unknown> }[];
+  skipped: { pool: string; reason: string }[];
+  api: { method: string; api_version: string; path: string };
+  notes: string[];
 }

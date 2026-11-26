@@ -231,15 +231,20 @@ Built, with tests:
 | Test deployment | `examples/apim/deploy/` | Bicep template (workspace, Application Insights, API Management with a managed identity, the policy on one chat-completions API, diagnostic settings) plus `deploy.sh` and `smoke-test.sh`. The template compiles (checked in CI) and the scripts parse; **neither has been run against a real subscription**. The smoke test sends a call with no token, one with a bad token and one with a real token, then runs the portal's gateway query. |
 | Pools | `usage_pools` tables (schema 3), `/api/usage-pools`, `usage-split?pool=` | A pool is a named set of agents **or** deployments (one basis for all pools, no value in two pools, so cost is never shared out twice). Each pool's cost is the billed cost of its members; it is split by the usage inside the pool, with its own spread-or-hold setting that a request can override. The report gives each pool, totals per cost centre, the pooled cost and the unpooled cost (not split here). Usage records now carry the agent and deployment. Members are matched to usage by exactly the billing name: an agent recorded under another name (the gateway source records the caller application's client ID) finds no usage, and the pool says so (`matched_usage: false`, all of its cost unattributed). Tools and projects are not pool members: there is no tool cost dimension, and usage records carry no project. |
 | Portal page | `portal/frontend` `UsageSplitPage` (menu: Allocate, Usage split; administrators) | Shows the split (whole resource, or totals plus each pool), how much usage had a known cost centre, the departments with no cost centre, and lets administrators manage pools and map departments to cost centres. When the live source isn't configured it shows the service's reason. Tested with the frontend suite and checked in a browser against demo data. |
+| Idle capacity | `allocate_by_usage(idle=...)`, pool setting `idle` (schema 4) | The unused part of a fixed cost (billed cost minus the estimated cost of the recorded calls) is reported as `idle_cost`, and a pool set to `hold` shows it as an `(idle capacity)` row so cost centres pay only for what their calls would have cost. Needs records with an estimated cost; with tokens only it spreads and says so. It is a pool setting you choose: the portal doesn't detect which deployments are provisioned. |
+| Reconciliation | `analysis.reconcile_usage`, `GET /api/cost-centres/usage-split/reconciliation`, the page's "Does the usage data cover everything Azure counted?" card | Recorded tokens against Azure Monitor's count per deployment: matches, under, over, nothing recorded, or not in Azure Monitor. Names are matched ignoring case. Records made with a model name instead of the deployment name show as unmatched. |
+| Agent names | `agent_aliases` table, `/api/agent-aliases`, "Agent names" card | Maps the name in usage records (often a client ID) to the billing `agent.name`, ignoring case. The split lists agent names that match no billing agent, with a button to map each. |
+| Azure allocation rules | `foundry_finops.allocation_rules`, `CostManagementOperations.put/list/delete_cost_allocation_rule`, `GET .../usage-split/allocation-rules`, the page's export card | Builds the documented request body (API 2024-08-01; one source, one target, at most 25 values, percentages summing to exactly 100.00; `NotActive` by default). The portal only **builds definitions for review**; it never sends them. Only agent pools can be sources (a tag); a deployment pool can't. Usage left unattributed and idle capacity are excluded and the rest renormalised. The calls were tested against a fake only, not a real billing account. |
 | Measure | `services.usage_split` | Estimated cost when the records carry it; tokens otherwise, and the report says which. Tokens ignore price differences between models. |
 
-Not built yet:
+Not built yet, or not verified:
 
+- **Everything that talks to Azure for this feature has only run against fakes:** the gateway policy and its query, the test
+  deployment, the Log Analytics reader and the allocation rule calls. Run `examples/apim/deploy` and check the open items.
 - **Bicep settings.** `PORTAL_LOGS_TARGET` and `PORTAL_USAGE_SOURCE` are set by hand (see `portal/docs/DEPLOY.md`).
 - **Pools of tools, and pools that mix agents and deployments.**
-- **Agent names that match billing.** A gateway agent ID (client ID) rarely equals the `agent.name` billing tag; a mapping
-  between them, or a deployment-based pool, is the workaround today.
-- **Idle capacity.** PTU cost with no per-call driver is not shown on its own line.
-- **Publishing to Azure Cost Management** (4.6), and the preview SDK check.
-- **Reconciliation** of traced tokens against Azure Monitor totals.
+- **Detecting provisioned deployments** to switch idle capacity on by itself.
+- **Azure allocation rules, end to end.** Cost centres that exist only in the portal have no resource to receive cost in
+  Cost Management; the target tag has to exist on resources. Whether the preview SDK mentioned at the start offers more than
+  this REST API is still unchecked.
 - **Retention** of call records and snapshots, and a rule for who may read per-person data beyond "administrators only".

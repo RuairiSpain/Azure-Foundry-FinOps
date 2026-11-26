@@ -78,8 +78,8 @@ describe("usage split calls", () => {
     const api = new ApiClient({ auth, fetchImpl: f as unknown as typeof fetch });
     await api.usageSplit(7);
     await api.usageSplit(30, "hold", 3);
-    await api.saveUsagePool({ name: "p", match_type: "agent", values: ["a"], unattributed: "hold" });
-    await api.saveUsagePool({ name: "p", match_type: "agent", values: ["a"], unattributed: "hold" }, 4);
+    await api.saveUsagePool({ name: "p", match_type: "agent", values: ["a"], unattributed: "hold", idle: "spread" });
+    await api.saveUsagePool({ name: "p", match_type: "agent", values: ["a"], unattributed: "hold", idle: "hold" }, 4);
     await api.setDepartmentMap("Risk & Fraud", 2);
     await api.deleteDepartmentMap("Risk & Fraud");
     const calls = f.mock.calls.map(([url, init]) => `${init.method} ${url}`);
@@ -92,5 +92,30 @@ describe("usage split calls", () => {
       "DELETE /api/cost-centres/department-map?department=Risk+%26+Fraud",
     ]);
     expect(JSON.parse(f.mock.calls[4]![1].body)).toEqual({ department: "Risk & Fraud", cost_centre_id: 2 });
+  });
+});
+
+describe("reconciliation, alias and allocation rule calls", () => {
+  it("builds the queries and bodies", async () => {
+    const auth = new DemoAuth([], store());
+    await auth.signIn("o");
+    const f = vi.fn().mockImplementation(() => Promise.resolve(json({})));
+    const api = new ApiClient({ auth, fetchImpl: f as unknown as typeof fetch });
+    await api.usageReconciliation(14);
+    await api.allocationRules(30);
+    await api.allocationRules(7, "cc", "agent");
+    await api.agentAliases();
+    await api.setAgentAlias("0a1b-client", "care-triage");
+    await api.deleteAgentAlias("0a1b-client");
+    const calls = f.mock.calls.map(([url, init]) => `${init.method} ${url}`);
+    expect(calls).toEqual([
+      "GET /api/cost-centres/usage-split/reconciliation?days=14",
+      "GET /api/cost-centres/usage-split/allocation-rules?days=30",
+      "GET /api/cost-centres/usage-split/allocation-rules?days=7&cost_centre_tag=cc&source_tag=agent",
+      "GET /api/agent-aliases",
+      "PUT /api/agent-aliases",
+      "DELETE /api/agent-aliases?alias=0a1b-client",
+    ]);
+    expect(JSON.parse(f.mock.calls[4]![1].body)).toEqual({ alias: "0a1b-client", agent: "care-triage" });
   });
 });

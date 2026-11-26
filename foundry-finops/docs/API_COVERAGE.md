@@ -39,7 +39,7 @@ Of its 75 operations in 21 groups, the SDK covers 6 groups fully or partly.
 | **Views** | 8 | none | Saved cost-analysis views (the thing scheduled actions point at) |
 | Price Sheet | 3 | none | Download your **negotiated** price sheet (EA and MCA billing scopes) |
 | Benefit Recommendations, Benefit Utilization Summaries, Generate Reservation Details Report | 1 + 4 + 8 | none | Savings plan and reservation data, relevant to PTU reservations |
-| Cost Allocation Rules | 5 | none | Allocate shared costs between resources, EA and MCA billing scope only; source and target lists hold one element each |
+| Cost Allocation Rules | 5 | list, create or update, delete (3) | Allocate shared costs between resources. The documented URL is a billing account only; a rule has one source and one target with at most 25 values each, and fixed percentages that add up to 100.00. `foundry_finops.allocation_rules` builds the body (`NotActive` by default); the calls have only been tested against a fake, never a real billing account |
 | Markup Rules | 4 | none | New in 2026-06-01, MCA billing profile for partners |
 
 `Microsoft.Consumption` (2026-06-01) is mostly superseded by the above. Microsoft's own description of the Cost Details
@@ -143,7 +143,7 @@ account paths, and the tag-inheritance path.
 
 **Niche**
 
-10. Cost allocation rules, markup rules, benefit and reservation utilisation, billing invoices, balances and credits,
+10. Markup rules, benefit and reservation utilisation, billing invoices, balances and credits,
     management-group aggregated cost, multi-cloud queries.
 
 ## 7. Notes on method and limits
@@ -178,5 +178,5 @@ value, and each says what it can't do.
 | Cost-control details | `etag` and `if_match` on update and delete, `FeatureNotRegistered` explained, filter-name rules validated | The preview spec | |
 
 **Still needs new API groups:** Cost Management alerts and scheduled actions (the real, portal-visible ones), saved portal
-views, the cost details report, cost allocation and markup rules, price sheet download, benefit and reservation utilisation,
+views, the cost details report, markup rules, price sheet download, benefit and reservation utilisation,
 commitment plans and tiers, model capacities, the capacity calculator, quota tiers, and API Management reports and quotas.

@@ -279,6 +279,8 @@ def reconcile_usage(
     rows: list[dict[str, Any]] = []
     for name in sorted(set(recorded) | set(azure)):
         rec, az = recorded.get(name, 0.0), azure.get(name)
+        if az is None and rec <= 0:
+            continue     # a name only your side has, with nothing recorded under it: nothing to reconcile
         if az is None:
             status, coverage = "not_in_monitor", None
         elif az <= 0:

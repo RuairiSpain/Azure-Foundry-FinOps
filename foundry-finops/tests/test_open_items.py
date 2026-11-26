@@ -89,6 +89,11 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn("(no deployment recorded)", self.rows(out))
         self.assertEqual(out["coverage_percent"], 0.0)
 
+    def test_a_name_only_your_side_has_with_nothing_recorded_is_not_a_row(self):
+        out = reconcile_usage([{"deployment": "ghost", "tokens": 0}, {"deployment": "a", "tokens": 10}], {"a": 10})
+        self.assertEqual([r["name"] for r in out["rows"]], ["a"])
+        self.assertEqual(out["not_in_monitor"], [])
+
     def test_nothing_from_azure_gives_no_coverage_figure(self):
         out = reconcile_usage([{"deployment": "a", "tokens": 5}], {})
         self.assertIsNone(out["coverage_percent"])

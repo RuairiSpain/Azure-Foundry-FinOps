@@ -172,7 +172,7 @@ describe("UsageSplitPage", () => {
   ];
   const whole = {
     days: 30, currency: "USD", measure: "cost" as const, unattributed_code: "(unattributed)", note: "An allocation, not billed cost.",
-    pools: [], total: 100, mode: "hold" as const, coverage_percent: 75, unattributed_percent: 25, rows,
+    pools: [], unmatched_agents: [], total: 100, mode: "hold" as const, coverage_percent: 75, unattributed_percent: 25, rows,
     unmapped_departments: [{ department: "Finance", usage: 40 }],
   };
   const pooled = {
@@ -180,13 +180,24 @@ describe("UsageSplitPage", () => {
     pools: [
       { id: 1, name: "Support agents", match_type: "agent" as const, values: ["care-triage"], total: 60, mode: "proportional" as const,
         coverage_percent: 0, unattributed_percent: 100, rows: [{ code: "(unattributed)", name: "x", allocated: 60, share_percent: 100 }],
-        unmapped_departments: [], matched_usage: false },
+        unmapped_departments: [], matched_usage: false, idle: "spread" as const, idle_cost: 12, idle_setting: "spread" as const },
     ],
+    unmatched_agents: [{ agent: "0a1b-client-id", usage: 55 }],
     totals: [{ code: "(unattributed)", name: "x", allocated: 60 }], pooled_cost: 60, unpooled_cost: 40,
   };
   const centres = [{ id: 7, code: "CC-FIN", name: "Finance", owner_oid: "", description: "", monthly_budget: null, rules: [] }];
   type Mocks = Record<string, ReturnType<typeof vi.fn>>;
+  const recon = {
+    days: 30, measure: "tokens", tolerance_percent: 5, azure_total: 2000, recorded_total: 1500, coverage_percent: 75, unrecorded: 500,
+    not_in_monitor: ["gpt-typo"], note: "Matched by name, ignoring case.",
+    rows: [
+      { name: "gpt-5.4", recorded: 1000, azure: 1000, difference: 0, coverage_percent: 100, status: "ok" },
+      { name: "o4-mini", recorded: 500, azure: 1000, difference: 500, coverage_percent: 50, status: "under" },
+      { name: "gpt-typo", recorded: 70, azure: null, difference: null, coverage_percent: null, status: "not_in_monitor" },
+    ],
+  };
   const api = (over: Mocks = {}): Mocks => ({
+    usageReconciliation: vi.fn().mockResolvedValue(recon), agentAliases: vi.fn().mockResolvedValue([{ alias: "abc", agent: "care-triage" }]),
     usageSplit: vi.fn().mockResolvedValue(whole), usagePools: vi.fn().mockResolvedValue([]),
     departmentMap: vi.fn().mockResolvedValue([{ department: "Risk", cost_centre_id: 1, cost_centre_code: "CC-RISK" }]),
     costCentres: vi.fn().mockResolvedValue(centres), ...over,
@@ -237,7 +248,7 @@ describe("UsageSplitPage", () => {
     await userEvent.selectOptions(screen.getByLabelText("Cost centre for the department"), "7");
     await userEvent.click(button);
     await waitFor(() => expect(a.setDepartmentMap).toHaveBeenCalledWith("Finance", 7));
-    await userEvent.click(screen.getByText("Remove"));
+    await userEvent.click(within(screen.getByRole("cell", { name: "Risk" }).closest("tr")!).getByText("Remove"));
     await waitFor(() => expect(a.deleteDepartmentMap).toHaveBeenCalledWith("Risk"));
   });
 
@@ -254,7 +265,7 @@ describe("UsageSplitPage", () => {
     await userEvent.type(screen.getByLabelText("Members"), "care-triage, kb-answers{enter}refund-assistant");
     await userEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(a.saveUsagePool).toHaveBeenCalledWith(
-      { name: "Support", match_type: "agent", values: ["care-triage", "kb-answers", "refund-assistant"], unattributed: "proportional" }, undefined));
+      { name: "Support", match_type: "agent", values: ["care-triage", "kb-answers", "refund-assistant"], unattributed: "proportional", idle: "spread" }, undefined));
   });
 
   it("shows the service's reason when a pool is refused", async () => {
@@ -278,5 +289,116 @@ describe("UsageSplitPage", () => {
     expect(page.visible!(me({ role: "admin" }))).toBe(true);
     expect(page.visible!(me({ role: "viewer" }))).toBe(false);
     expect(page.visible!(me({ role: "owner" }))).toBe(false);
+  });
+});
+
+describe("UsageSplitPage: idle capacity, reconciliation, agent names and rules", () => {
+  type Mocks = Record<string, ReturnType<typeof vi.fn>>;
+  const base = (over: Mocks = {}): Mocks => ({
+    usageSplit: vi.fn().mockResolvedValue({
+      days: 30, currency: "USD", measure: "cost", unattributed_code: "(unattributed)", note: "n", unmatched_agents: [],
+      pools: [{
+        id: 1, name: "PTU pool", match_type: "deployment", values: ["gpt-5.4"], total: 100, mode: "proportional", coverage_percent: 100,
+        unattributed_percent: 0, unmapped_departments: [], matched_usage: true, idle: "hold", idle_setting: "hold", idle_cost: 60,
+        rows: [{ code: "(idle capacity)", name: "x", allocated: 60, share_percent: 60 }, { code: "CC-1", name: "One", allocated: 40, share_percent: 40 }],
+      }],
+      totals: [{ code: "CC-1", name: "One", allocated: 40 }], pooled_cost: 100, unpooled_cost: 0,
+    }),
+    usagePools: vi.fn().mockResolvedValue([]), departmentMap: vi.fn().mockResolvedValue([]), costCentres: vi.fn().mockResolvedValue([]),
+    usageReconciliation: vi.fn().mockResolvedValue({
+      days: 30, measure: "tokens", tolerance_percent: 5, azure_total: 2000, recorded_total: 1500, coverage_percent: 75, unrecorded: 500,
+      not_in_monitor: ["gpt-typo"], note: "Matched by name.",
+      rows: [
+        { name: "gpt-5.4", recorded: 1000, azure: 1000, difference: 0, coverage_percent: 100, status: "ok" },
+        { name: "o4-mini", recorded: 500, azure: 1000, difference: 500, coverage_percent: 50, status: "under" },
+        { name: "gpt-typo", recorded: 70, azure: null, difference: null, coverage_percent: null, status: "not_in_monitor" },
+      ],
+    }),
+    agentAliases: vi.fn().mockResolvedValue([]), ...over,
+  });
+
+  it("shows a pool's unused fixed cost on its own row", async () => {
+    wrap(base(), <UsageSplitPage />);
+    expect(await screen.findByText("Idle capacity")).toBeInTheDocument();
+    expect(screen.getByText("$60.00")).toBeInTheDocument();
+  });
+
+  it("says when unused fixed cost was spread instead, and why a hold wasn't possible", async () => {
+    const r = (await base().usageSplit!()) as { pools: Record<string, unknown>[] };
+    r.pools[0] = { ...r.pools[0], rows: [{ code: "CC-1", name: "One", allocated: 100, share_percent: 100 }], idle: "spread", idle_cost: 25, idle_note: "Idle capacity needs estimated cost." };
+    wrap(base({ usageSplit: vi.fn().mockResolvedValue(r) }), <UsageSplitPage />);
+    expect(await screen.findByText(/\$25.00 is fixed cost that the recorded calls did not use/)).toBeInTheDocument();
+    expect(screen.getByText(/Idle capacity needs estimated cost/)).toBeInTheDocument();
+  });
+
+  it("shows how much of Azure's token count the records cover, per deployment", async () => {
+    wrap(base(), <UsageSplitPage />);
+    expect(await screen.findByText(/75.0%/)).toBeInTheDocument();
+    expect(screen.getByText(/500 tokens are not accounted for/)).toBeInTheDocument();
+    expect(screen.getByText("Matches")).toBeInTheDocument();
+    expect(screen.getByText("Records hold less")).toBeInTheDocument();
+    expect(screen.getByText("Not in Azure Monitor")).toBeInTheDocument();
+  });
+
+  it("shows the reconciliation's own error without hiding the split", async () => {
+    wrap(base({ usageReconciliation: vi.fn().mockRejectedValue(new Error("Azure Monitor: 403")) }), <UsageSplitPage />);
+    expect(await screen.findByText("PTU pool · $100.00")).toBeInTheDocument();
+    expect(await screen.findByText(/Azure Monitor: 403/)).toBeInTheDocument();
+  });
+
+  it("offers to map an agent name that billing doesn't know, with the name filled in", async () => {
+    const r = (await base().usageSplit!()) as Record<string, unknown>;
+    const a = base({ usageSplit: vi.fn().mockResolvedValue({ ...r, unmatched_agents: [{ agent: "0a1b-client", usage: 12 }] }), setAgentAlias: vi.fn().mockResolvedValue({}) });
+    wrap(a, <UsageSplitPage />);
+    await userEvent.click(await screen.findByText("Map to a billing agent"));
+    expect(screen.getByLabelText("Named in the usage records")).toHaveValue("0a1b-client");
+    await userEvent.click(screen.getByText("Save"));
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter both names");
+    await userEvent.type(screen.getByLabelText("Billing agent name"), "care-triage");
+    await userEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(a.setAgentAlias).toHaveBeenCalledWith("0a1b-client", "care-triage"));
+  });
+
+  it("lists agent names already mapped and removes one", async () => {
+    const a = base({ agentAliases: vi.fn().mockResolvedValue([{ alias: "abc", agent: "care-triage" }]), deleteAgentAlias: vi.fn().mockResolvedValue({ deleted: true }) });
+    wrap(a, <UsageSplitPage />);
+    expect(await screen.findByText("abc")).toBeInTheDocument();
+    const row = screen.getByText("abc").closest("tr")!;
+    await userEvent.click(within(row).getByText("Remove"));
+    await waitFor(() => expect(a.deleteAgentAlias).toHaveBeenCalledWith("abc"));
+  });
+
+  it("builds allocation rules for review, says nothing was sent, and shows what was skipped", async () => {
+    const rules = {
+      days: 30, source_tag: "agent.name", target_tag: "cc",
+      rules: [{ name: "finops-Support", pool: "Support", excluded_percent: 40, definition: { properties: { status: "NotActive" } } }],
+      skipped: [{ pool: "Models", reason: "Azure allocation rules can't use a deployment as a source" }],
+      api: { method: "PUT", api_version: "2024-08-01", path: "/x" }, notes: ["For review only: nothing here has been sent to Azure."],
+    };
+    const a = base({ allocationRules: vi.fn().mockResolvedValue(rules) });
+    wrap(a, <UsageSplitPage />);
+    await screen.findByText("PTU pool · $100.00");
+    await userEvent.clear(screen.getByLabelText("Cost centre tag name"));
+    await userEvent.type(screen.getByLabelText("Cost centre tag name"), "cc");
+    await userEvent.click(screen.getByText("Build rule definitions"));
+    await waitFor(() => expect(a.allocationRules).toHaveBeenCalledWith(30, "cc"));
+    expect(await screen.findByText(/40.0% left out/)).toBeInTheDocument();
+    expect(screen.getByText("finops-Support")).toBeInTheDocument();
+    expect(screen.getByText(/nothing here has been sent to Azure/)).toBeInTheDocument();
+    expect(screen.getByText(/can't use a deployment as a source/)).toBeInTheDocument();
+    expect(screen.getByText("Download JSON")).toBeInTheDocument();
+  });
+
+  it("saves a pool's idle setting", async () => {
+    const a = base({ saveUsagePool: vi.fn().mockResolvedValue({}) });
+    wrap(a, <UsageSplitPage />);
+    await screen.findByText("PTU pool · $100.00");
+    await userEvent.click(screen.getByText("New pool"));
+    await userEvent.type(screen.getByLabelText("Name"), "P");
+    await userEvent.type(screen.getByLabelText("Members"), "x");
+    await userEvent.selectOptions(screen.getByLabelText("Fixed cost that no call used"), "hold");
+    await userEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(a.saveUsagePool).toHaveBeenCalledWith(
+      { name: "P", match_type: "agent", values: ["x"], unattributed: "proportional", idle: "hold" }, undefined));
   });
 });
