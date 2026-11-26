@@ -93,7 +93,17 @@ CREATE TABLE usage_pool_members (
 """
 POOL_MATCH_TYPES = ("agent", "deployment")
 UNATTRIBUTED_MODES = ("proportional", "hold")
-_VERSION = 3
+# Schema 4: whether a pool shows its unused fixed cost on its own row, and names that map a usage record's agent to the
+# agent name used in billing.
+_SCHEMA_V4 = """
+ALTER TABLE usage_pools ADD COLUMN idle TEXT NOT NULL DEFAULT 'spread';
+CREATE TABLE agent_aliases (
+  alias TEXT PRIMARY KEY COLLATE NOCASE,
+  agent TEXT NOT NULL
+);
+"""
+IDLE_MODES = ("spread", "hold")
+_VERSION = 4
 
 
 def now_iso() -> str:
@@ -143,11 +153,12 @@ class Store:
     def _migrate(self) -> None:
         with self._conn() as c:
             version = c.execute("PRAGMA user_version").fetchone()[0]
+            upgrades = (_SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4)   # upgrades[n - 1] takes schema n to n + 1
             if version == 0:
-                c.executescript(_SCHEMA + _SCHEMA_V2 + _SCHEMA_V3)
+                c.executescript(_SCHEMA + "".join(upgrades))
                 c.execute(f"PRAGMA user_version = {_VERSION}")
-            elif version in (1, 2):
-                c.executescript((_SCHEMA_V2 if version == 1 else "") + _SCHEMA_V3)
+            elif 0 < version < _VERSION:
+                c.executescript("".join(upgrades[version - 1:]))
                 c.execute(f"PRAGMA user_version = {_VERSION}")
             elif version > _VERSION:
                 raise RuntimeError(f"{self.path} was written by a newer portal (schema {version})")
@@ -352,7 +363,7 @@ class Store:
         return next((p for p in self.list_pools() if p["id"] == pool_id), None)
 
     def save_pool(self, name: str, match_type: str, values: list[str], unattributed: str = "proportional",
-                  pool_id: int | None = None) -> dict[str, Any]:
+                  pool_id: int | None = None, idle: str = "spread") -> dict[str, Any]:
         """Create or replace a pool.
 
         Every pool uses the same basis (agent or deployment) and no value is in two pools. Otherwise the same cost would
@@ -366,6 +377,8 @@ class Store:
             raise ValueError(f"match_type must be one of {POOL_MATCH_TYPES}")
         if unattributed not in UNATTRIBUTED_MODES:
             raise ValueError(f"unattributed must be one of {UNATTRIBUTED_MODES}")
+        if idle not in IDLE_MODES:
+            raise ValueError(f"idle must be one of {IDLE_MODES}")
         if not values:
             raise ValueError("A pool needs at least one agent or deployment")
         others = [p for p in self.list_pools() if p["id"] != pool_id]
@@ -379,12 +392,12 @@ class Store:
             raise ValueError(f"{clash[0]!r} is already in pool {taken[clash[0]]!r}; a value can be in one pool only")
         with self._conn() as c:
             if pool_id is None:
-                cur = c.execute("INSERT INTO usage_pools(name, match_type, unattributed) VALUES (?,?,?)",
-                                (name, match_type, unattributed))
+                cur = c.execute("INSERT INTO usage_pools(name, match_type, unattributed, idle) VALUES (?,?,?,?)",
+                                (name, match_type, unattributed, idle))
                 pool_id = int(cur.lastrowid or 0)
             else:
-                c.execute("UPDATE usage_pools SET name=?, match_type=?, unattributed=? WHERE id=?",
-                          (name, match_type, unattributed, pool_id))
+                c.execute("UPDATE usage_pools SET name=?, match_type=?, unattributed=?, idle=? WHERE id=?",
+                          (name, match_type, unattributed, idle, pool_id))
                 c.execute("DELETE FROM usage_pool_members WHERE pool_id = ?", (pool_id,))
             c.executemany("INSERT INTO usage_pool_members(pool_id, value) VALUES (?,?)", [(pool_id, v) for v in values])
         found = self.get_pool(pool_id)
@@ -394,6 +407,29 @@ class Store:
     def delete_pool(self, pool_id: int) -> bool:
         with self._conn() as c:
             return c.execute("DELETE FROM usage_pools WHERE id = ?", (pool_id,)).rowcount > 0
+
+    # ------------------------------------------------------------ agent aliases
+    def set_agent_alias(self, alias: str, agent: str) -> dict[str, Any]:
+        """Treat ``alias`` (how an agent is named in usage records, often a client ID) as the billing name ``agent``."""
+        alias, agent = alias.strip(), agent.strip()
+        if not alias or not agent:
+            raise ValueError("An alias needs both the name in the usage records and the agent name in billing")
+        if alias.casefold() == agent.casefold():
+            raise ValueError("The alias is the same as the agent name; nothing to map")
+        with self._conn() as c:
+            if c.execute("SELECT 1 FROM agent_aliases WHERE alias = ?", (agent,)).fetchone():
+                raise ValueError(f"{agent!r} is itself an alias; map to the billing name instead")
+            c.execute("INSERT INTO agent_aliases(alias, agent) VALUES (?, ?) "
+                      "ON CONFLICT(alias) DO UPDATE SET agent = excluded.agent", (alias, agent))
+        return {"alias": alias, "agent": agent}
+
+    def delete_agent_alias(self, alias: str) -> bool:
+        with self._conn() as c:
+            return c.execute("DELETE FROM agent_aliases WHERE alias = ?", (alias.strip(),)).rowcount > 0
+
+    def list_agent_aliases(self) -> list[dict[str, Any]]:
+        with self._conn() as c:
+            return self._rows(c.execute("SELECT alias, agent FROM agent_aliases ORDER BY agent, alias"))
 
     # ------------------------------------------------------ notification rules
     def list_notification_rules(self) -> list[dict[str, Any]]:
